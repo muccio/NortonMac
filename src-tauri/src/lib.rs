@@ -1,0 +1,40 @@
+pub mod archive_vfs;
+pub mod commands;
+pub mod local_fs;
+pub mod models;
+pub mod remote_fs;
+pub mod site_manager;
+
+use commands::AppState;
+use remote_fs::RemoteManager;
+use std::sync::Arc;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let remote_manager = Arc::new(RemoteManager::new());
+
+    tauri::Builder::default()
+        .manage(AppState {
+            remote_manager: remote_manager.clone(),
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_home_directory,
+            commands::get_volumes,
+            commands::list_directory,
+            commands::read_file_preview,
+            commands::save_file_content,
+            commands::open_file_native,
+            commands::create_directory,
+            commands::delete_items,
+            commands::copy_items,
+            commands::move_items,
+            commands::create_archive,
+            commands::execute_shell_command,
+            commands::get_saved_sites,
+            commands::save_site_config,
+            commands::delete_site_config,
+            commands::connect_site,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

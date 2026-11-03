@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build Outputs
+dist/
+dist-macos/
+src-tauri/target/
+
+# OS / Editor
+.DS_Store
+*.pem
+.env
+.env.local
+.vscode/
+.idea/

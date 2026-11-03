@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="90" fill="#0000AA"/>
+  <!-- Outer double cyan border -->
+  <rect x="24" y="24" width="464" height="464" rx="70" fill="none" stroke="#00AAAA" stroke-width="12"/>
+  <rect x="42" y="42" width="428" height="428" rx="56" fill="none" stroke="#55FFFF" stroke-width="4"/>
+  
+  <!-- Central split divider -->
+  <line x1="256" y1="50" x2="256" y2="462" stroke="#00AAAA" stroke-width="6"/>
+  
+  <!-- Left pane simulated directory header -->
+  <rect x="50" y="50" width="200" height="34" fill="#00AAAA"/>
+  <text x="65" y="74" font-family="Courier, monospace" font-size="20" font-weight="bold" fill="#000000">C:\COMMANDER</text>
+  
+  <!-- Right pane simulated directory header -->
+  <rect x="262" y="50" width="200" height="34" fill="#00AAAA"/>
+  <text x="277" y="74" font-family="Courier, monospace" font-size="20" font-weight="bold" fill="#000000">MAC:\ARCHIVE</text>
+
+  <!-- Dual panel lines -->
+  <line x1="60" y1="110" x2="245" y2="110" stroke="#55FFFF" stroke-width="4" stroke-dasharray="16, 8"/>
+  <line x1="60" y1="130" x2="245" y2="130" stroke="#00AAAA" stroke-width="3"/>
+  <line x1="60" y1="150" x2="245" y2="150" stroke="#55FFFF" stroke-width="4" stroke-dasharray="24, 12"/>
+  <line x1="60" y1="170" x2="245" y2="170" stroke="#00AAAA" stroke-width="3"/>
+  <line x1="60" y1="190" x2="245" y2="190" stroke="#55FFFF" stroke-width="4" stroke-dasharray="18, 10"/>
+
+  <line x1="268" y1="110" x2="452" y2="110" stroke="#55FFFF" stroke-width="4" stroke-dasharray="20, 10"/>
+  <line x1="268" y1="130" x2="452" y2="130" stroke="#00AAAA" stroke-width="3"/>
+  <line x1="268" y1="150" x2="452" y2="150" stroke="#55FFFF" stroke-width="4" stroke-dasharray="14, 8"/>
+  <line x1="268" y1="170" x2="452" y2="170" stroke="#00AAAA" stroke-width="3"/>
+  <line x1="268" y1="190" x2="452" y2="190" stroke="#55FFFF" stroke-width="4" stroke-dasharray="26, 14"/>
+
+  <!-- Norton Commander Gold Badge -->
+  <rect x="76" y="230" width="360" height="180" rx="16" fill="#00AAAA" stroke="#FFFF55" stroke-width="8"/>
+  <text x="256" y="320" font-family="Impact, Arial Black, sans-serif" font-size="90" font-weight="900" fill="#FFFF55" text-anchor="middle" letter-spacing="4">NC</text>
+  <text x="256" y="380" font-family="Courier, monospace" font-size="24" font-weight="bold" fill="#000000" text-anchor="middle">FOR macOS</text>
+  
+  <!-- Function Key preview at bottom -->
+  <rect x="50" y="426" width="76" height="26" fill="#00AAAA"/>
+  <text x="88" y="444" font-family="Courier, monospace" font-size="14" font-weight="bold" fill="#000000" text-anchor="middle">1 Help</text>
+
+  <rect x="132" y="426" width="76" height="26" fill="#00AAAA"/>
+  <text x="170" y="444" font-family="Courier, monospace" font-size="14" font-weight="bold" fill="#000000" text-anchor="middle">3 View</text>
+
+  <rect x="214" y="426" width="76" height="26" fill="#00AAAA"/>
+  <text x="252" y="444" font-family="Courier, monospace" font-size="14" font-weight="bold" fill="#000000" text-anchor="middle">5 Copy</text>
+
+  <rect x="296" y="426" width="76" height="26" fill="#00AAAA"/>
+  <text x="334" y="444" font-family="Courier, monospace" font-size="14" font-weight="bold" fill="#000000" text-anchor="middle">7 MkDir</text>
+
+  <rect x="378" y="426" width="84" height="26" fill="#00AAAA"/>
+  <text x="420" y="444" font-family="Courier, monospace" font-size="14" font-weight="bold" fill="#000000" text-anchor="middle">10 Quit</text>
+</svg>

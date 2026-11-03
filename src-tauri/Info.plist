@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>NortonMac</string>
+    <key>CFBundleExecutable</key>
+    <string>NortonMac</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.nortonmac.filemanager</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>NortonMac</string>
+    <key>CFBundleIconFile</key>
+    <string>icon.icns</string>
+    <key>CFBundleIconName</key>
+    <string>icon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>NortonMac requires access to the Desktop folder to view and manage files in dual panels.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>NortonMac requires access to Documents to view, edit and manage files.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>NortonMac requires access to Downloads to view and manage downloaded archives and files.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>NortonMac requires access to external and removable drives for file transfer operations.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>NortonMac requires access to network shares and mounted volumes.</string>
+    <key>NSFileProviderPresenceUsageDescription</key>
+    <string>NortonMac navigates the macOS file system.</string>
+    <key>NSSystemAdministrationUsageDescription</key>
+    <string>NortonMac requires full access permissions to perform file manager operations across volumes.</string>
+</dict>
+</plist>

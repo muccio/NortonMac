@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Norton Commander for macOS</title>
+    <style>
+      /* Ensure crisp typography and eliminate text selection unless in editor */
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #000000;
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      /* Custom retro scrollbars */
+      ::-webkit-scrollbar {
+        width: 12px;
+        height: 12px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #000080;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #00AAAA;
+        border: 1px solid #55FFFF;
+      }
+    </style>
+  </head>
+  <body class="bg-black text-nc-white font-mono antialiased overflow-hidden select-none">
+    <div id="root" class="w-screen h-screen"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
