@@ -41,6 +41,8 @@ export interface FilePreview {
   filename: string;
   size: number;
   is_binary: boolean;
+  is_pdf?: boolean;
+  pdf_data_base64?: string;
   text_content?: string;
   hex_lines: HexLine[];
   encoding: string;

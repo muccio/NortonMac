@@ -13,6 +13,7 @@ use crate::remote_fs::{
     parse_remote_url, upload_sftp_file, RemoteManager,
 };
 use crate::site_manager::{delete_site, load_sites, save_site};
+use base64::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -102,6 +103,13 @@ pub async fn read_file_preview(
     };
 
     let total_size = bytes.len() as u64;
+    let is_pdf = filename.to_lowercase().ends_with(".pdf") || bytes.starts_with(b"%PDF-");
+    let pdf_data_base64 = if is_pdf && bytes.len() <= 50 * 1024 * 1024 {
+        Some(BASE64_STANDARD.encode(&bytes))
+    } else {
+        None
+    };
+
     let preview_limit = 256 * 1024; // 256 KB max for preview
     let slice = if bytes.len() > preview_limit {
         &bytes[..preview_limit]
@@ -109,7 +117,7 @@ pub async fn read_file_preview(
         &bytes[..]
     };
 
-    let is_binary = slice.iter().take(1024).any(|&b| b == 0);
+    let is_binary = if is_pdf { true } else { slice.iter().take(1024).any(|&b| b == 0) };
     let text_content = if !is_binary && !hex_mode {
         match std::str::from_utf8(slice) {
             Ok(s) => Some(s.to_string()),
@@ -159,9 +167,17 @@ pub async fn read_file_preview(
         filename,
         size: total_size,
         is_binary,
+        is_pdf,
+        pdf_data_base64,
         text_content,
         hex_lines,
-        encoding: if is_binary { "Binary (Hex)".to_string() } else { "UTF-8".to_string() },
+        encoding: if is_pdf {
+            "PDF Document".to_string()
+        } else if is_binary {
+            "Binary (Hex)".to_string()
+        } else {
+            "UTF-8".to_string()
+        },
     })
 }
 

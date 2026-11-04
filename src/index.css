@@ -7,3 +7,69 @@
     box-sizing: border-box;
   }
 }
+
+/* Retro DOS Norton Commander Syntax Highlighting Tokens */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: #55FF55 !important; /* DOS Bright Green */
+  font-style: italic;
+}
+
+.token.punctuation {
+  color: #00AAAA !important; /* DOS Cyan */
+}
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol,
+.token.deleted {
+  color: #FF5555 !important; /* DOS Bright Red */
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted {
+  color: #FFFF55 !important; /* DOS Bright Yellow */
+}
+
+.token.operator,
+.token.entity,
+.token.url {
+  color: #55FFFF !important; /* DOS Bright Cyan */
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: #55FFFF !important; /* DOS Bright Cyan */
+  font-weight: bold;
+}
+
+.token.function,
+.token.class-name {
+  color: #FFFFFF !important; /* DOS Bright White */
+  font-weight: bold;
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: #FFAA00 !important;
+}
+
+.token.important,
+.token.bold {
+  font-weight: bold;
+}
+
+.token.italic {
+  font-style: italic;
+}

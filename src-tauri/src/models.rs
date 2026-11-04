@@ -41,6 +41,8 @@ pub struct FilePreview {
     pub filename: String,
     pub size: u64,
     pub is_binary: bool,
+    pub is_pdf: bool,
+    pub pdf_data_base64: Option<String>,
     pub text_content: Option<String>,
     pub hex_lines: Vec<HexLine>,
     pub encoding: String,
