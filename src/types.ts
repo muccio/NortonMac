@@ -42,6 +42,9 @@ export interface FilePreview {
   size: number;
   is_binary: boolean;
   is_pdf?: boolean;
+  media_type?: 'image' | 'audio' | 'video' | 'pdf';
+  mime_type?: string;
+  media_data_base64?: string;
   pdf_data_base64?: string;
   text_content?: string;
   hex_lines: HexLine[];

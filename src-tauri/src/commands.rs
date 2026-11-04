@@ -61,6 +61,80 @@ pub async fn list_directory(
     list_local_directory(&path, show_hidden)
 }
 
+fn detect_media_type(filename: &str, bytes: &[u8]) -> (Option<String>, Option<String>) {
+    let lower = filename.to_lowercase();
+    let ext = lower.rsplit('.').next().unwrap_or("");
+
+    // Check PDF
+    if ext == "pdf" || bytes.starts_with(b"%PDF-") {
+        return (Some("pdf".to_string()), Some("application/pdf".to_string()));
+    }
+
+    // Images
+    match ext {
+        "png" => return (Some("image".to_string()), Some("image/png".to_string())),
+        "jpg" | "jpeg" => return (Some("image".to_string()), Some("image/jpeg".to_string())),
+        "gif" => return (Some("image".to_string()), Some("image/gif".to_string())),
+        "webp" => return (Some("image".to_string()), Some("image/webp".to_string())),
+        "svg" => return (Some("image".to_string()), Some("image/svg+xml".to_string())),
+        "bmp" => return (Some("image".to_string()), Some("image/bmp".to_string())),
+        "ico" => return (Some("image".to_string()), Some("image/x-icon".to_string())),
+        "tiff" | "tif" => return (Some("image".to_string()), Some("image/tiff".to_string())),
+        "avif" => return (Some("image".to_string()), Some("image/avif".to_string())),
+        _ => {}
+    }
+
+    // Audio
+    match ext {
+        "mp3" => return (Some("audio".to_string()), Some("audio/mpeg".to_string())),
+        "wav" => return (Some("audio".to_string()), Some("audio/wav".to_string())),
+        "ogg" | "oga" => return (Some("audio".to_string()), Some("audio/ogg".to_string())),
+        "m4a" => return (Some("audio".to_string()), Some("audio/mp4".to_string())),
+        "aac" => return (Some("audio".to_string()), Some("audio/aac".to_string())),
+        "flac" => return (Some("audio".to_string()), Some("audio/flac".to_string())),
+        "aiff" | "aif" => return (Some("audio".to_string()), Some("audio/aiff".to_string())),
+        _ => {}
+    }
+
+    // Video
+    match ext {
+        "mp4" => return (Some("video".to_string()), Some("video/mp4".to_string())),
+        "webm" => return (Some("video".to_string()), Some("video/webm".to_string())),
+        "mov" => return (Some("video".to_string()), Some("video/quicktime".to_string())),
+        "m4v" => return (Some("video".to_string()), Some("video/x-m4v".to_string())),
+        "ogv" => return (Some("video".to_string()), Some("video/ogg".to_string())),
+        _ => {}
+    }
+
+    // Magic bytes fallback
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return (Some("image".to_string()), Some("image/png".to_string()));
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return (Some("image".to_string()), Some("image/jpeg".to_string()));
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return (Some("image".to_string()), Some("image/gif".to_string()));
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return (Some("image".to_string()), Some("image/webp".to_string()));
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        return (Some("audio".to_string()), Some("audio/wav".to_string()));
+    }
+    if bytes.starts_with(b"fLaC") {
+        return (Some("audio".to_string()), Some("audio/flac".to_string()));
+    }
+    if bytes.starts_with(b"OggS") {
+        return (Some("audio".to_string()), Some("audio/ogg".to_string()));
+    }
+    if bytes.starts_with(b"ID3") {
+        return (Some("audio".to_string()), Some("audio/mpeg".to_string()));
+    }
+
+    (None, None)
+}
+
 #[tauri::command]
 pub async fn read_file_preview(
     path: String,
@@ -103,9 +177,18 @@ pub async fn read_file_preview(
     };
 
     let total_size = bytes.len() as u64;
-    let is_pdf = filename.to_lowercase().ends_with(".pdf") || bytes.starts_with(b"%PDF-");
-    let pdf_data_base64 = if is_pdf && bytes.len() <= 50 * 1024 * 1024 {
+    let (media_type, mime_type) = detect_media_type(&filename, &bytes);
+    let is_pdf = media_type.as_deref() == Some("pdf");
+
+    // Allow media files up to 100MB to be encoded in base64
+    let media_data_base64 = if media_type.is_some() && bytes.len() <= 100 * 1024 * 1024 {
         Some(BASE64_STANDARD.encode(&bytes))
+    } else {
+        None
+    };
+
+    let pdf_data_base64 = if is_pdf {
+        media_data_base64.clone()
     } else {
         None
     };
@@ -117,8 +200,14 @@ pub async fn read_file_preview(
         &bytes[..]
     };
 
-    let is_binary = if is_pdf { true } else { slice.iter().take(1024).any(|&b| b == 0) };
-    let text_content = if !is_binary && !hex_mode {
+    let is_svg = filename.to_lowercase().ends_with(".svg");
+    let is_binary = if is_pdf || (media_type.is_some() && !is_svg) {
+        true
+    } else {
+        slice.iter().take(1024).any(|&b| b == 0)
+    };
+
+    let text_content = if (!is_binary || is_svg) && !hex_mode {
         match std::str::from_utf8(slice) {
             Ok(s) => Some(s.to_string()),
             Err(_) => None,
@@ -152,7 +241,6 @@ pub async fn read_file_preview(
             }
         }
 
-        // Pad if less than 16 bytes
         let hex_bytes = hex_parts.join(" ");
 
         hex_lines.push(HexLine {
@@ -162,22 +250,34 @@ pub async fn read_file_preview(
         });
     }
 
+    let encoding = if let Some(ref mtype) = media_type {
+        let mime = mime_type.as_deref().unwrap_or("unknown");
+        match mtype.as_str() {
+            "image" => format!("Image ({})", mime),
+            "audio" => format!("Audio ({})", mime),
+            "video" => format!("Video ({})", mime),
+            "pdf" => "PDF Document".to_string(),
+            _ => mime.to_string(),
+        }
+    } else if is_binary {
+        "Binary (Hex)".to_string()
+    } else {
+        "UTF-8".to_string()
+    };
+
     Ok(FilePreview {
         path,
         filename,
         size: total_size,
         is_binary,
         is_pdf,
+        media_type,
+        mime_type,
+        media_data_base64,
         pdf_data_base64,
         text_content,
         hex_lines,
-        encoding: if is_pdf {
-            "PDF Document".to_string()
-        } else if is_binary {
-            "Binary (Hex)".to_string()
-        } else {
-            "UTF-8".to_string()
-        },
+        encoding,
     })
 }
 

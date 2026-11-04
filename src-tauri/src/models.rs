@@ -42,6 +42,9 @@ pub struct FilePreview {
     pub size: u64,
     pub is_binary: bool,
     pub is_pdf: bool,
+    pub media_type: Option<String>, // "image" | "audio" | "video" | "pdf"
+    pub mime_type: Option<String>,
+    pub media_data_base64: Option<String>,
     pub pdf_data_base64: Option<String>,
     pub text_content: Option<String>,
     pub hex_lines: Vec<HexLine>,
