@@ -31,7 +31,7 @@ flate2 = "1.0"
 bzip2 = "0.4"
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 openssl = { version = "0.10", features = ["vendored"] }
-suppaftp = "12.2"
+suppaftp = { version = "12.2", features = ["native-tls", "deprecated"] }
 open = "5.3"
 walkdir = "2.5"
 libc = "0.2"

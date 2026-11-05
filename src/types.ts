@@ -61,7 +61,7 @@ export interface ShellOutput {
 export interface SiteConfig {
   id: string;
   name: string;
-  protocol: 'sftp' | 'ftp';
+  protocol: 'sftp' | 'ftp' | 'ftps';
   host: string;
   port: number;
   username: string;

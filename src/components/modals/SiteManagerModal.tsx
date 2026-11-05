@@ -54,28 +54,61 @@ export const SiteManagerModal: React.FC<SiteManagerModalProps> = ({
     loadSites();
   }, []);
 
+  const cleanHostString = (raw: string): string => {
+    let h = raw.trim();
+    for (const prefix of ['sftp://', 'ftps://', 'ftp://', 'ssh://']) {
+      if (h.toLowerCase().startsWith(prefix)) {
+        h = h.slice(prefix.length);
+      }
+    }
+    const slashIdx = h.indexOf('/');
+    if (slashIdx !== -1) {
+      h = h.slice(0, slashIdx);
+    }
+    return h.trim();
+  };
+
   const handleAddNew = () => {
     const newSite: SiteConfig = {
       id: `site-${Date.now()}`,
-      name: 'New SFTP Server',
-      protocol: 'sftp',
-      host: 'example.com',
-      port: 22,
-      username: 'root',
+      name: 'New FTP Server',
+      protocol: 'ftp',
+      host: 'ftp.example.com',
+      port: 21,
+      username: 'user',
       password: '',
       private_key_path: '',
       default_path: '/',
     };
+    setErrorMsg('');
     setShowImport(false);
     setEditingSite(newSite);
   };
 
   const handleSaveEdit = async () => {
     if (!editingSite) return;
+    const cleanedHost = cleanHostString(editingSite.host);
+    if (!cleanedHost) {
+      setErrorMsg('Il campo Host / IP non può essere vuoto.');
+      return;
+    }
+    if (cleanedHost.includes('@')) {
+      const domainHint = cleanedHost.split('@').pop() || 'esempio.it';
+      setErrorMsg(
+        `Host non valido ('${cleanedHost}'): contiene '@'. Inserisci solo il dominio nel campo Host/IP (es. 'ftp.${domainHint}') e l'email/utente in Username.`
+      );
+      return;
+    }
+    const normalizedSite: SiteConfig = {
+      ...editingSite,
+      host: cleanedHost,
+      port: editingSite.port || (editingSite.protocol === 'sftp' ? 22 : 21),
+    };
     try {
-      await api.saveSiteConfig(editingSite);
+      setErrorMsg('');
+      await api.saveSiteConfig(normalizedSite);
       await loadSites();
-      setSelectedSiteId(editingSite.id);
+      setSelectedSiteId(normalizedSite.id);
       setEditingSite(null);
       setSuccessMsg('Profile saved successfully.');
       setTimeout(() => setSuccessMsg(''), 3000);
@@ -102,9 +135,11 @@ export const SiteManagerModal: React.FC<SiteManagerModalProps> = ({
     setErrorMsg('');
     try {
       const mountUrl = await api.connectSite(id);
+      await loadSites();
       onConnect(mountUrl);
       onClose();
     } catch (err: any) {
+      await loadSites();
       setErrorMsg(String(err));
     } finally {
       setInProgress(false);
@@ -773,47 +808,143 @@ export const SiteManagerModal: React.FC<SiteManagerModalProps> = ({
                       />
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-nc-brightcyan font-bold block mb-0.5">Protocol:</label>
-                        <select
-                          value={editingSite.protocol}
-                          onChange={(e) =>
+                    <div>
+                      <label className="text-nc-brightcyan font-bold block mb-1">Protocol:</label>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
                             setEditingSite({
                               ...editingSite,
-                              protocol: e.target.value as any,
-                              port: e.target.value === 'ftp' ? 21 : 22,
+                              protocol: 'ftp',
+                              port: editingSite.port === 22 || editingSite.port === 990 ? 21 : editingSite.port || 21,
                             })
                           }
-                          className="w-full bg-nc-blue text-nc-white border border-nc-cyan p-1 outline-none cursor-pointer"
+                          className={`py-1.5 px-2 font-black border text-xs ${
+                            editingSite.protocol === 'ftp'
+                              ? 'bg-nc-yellow text-nc-black border-nc-white'
+                              : 'bg-nc-blue text-nc-white border-nc-cyan hover:bg-nc-cyan hover:text-nc-black'
+                          }`}
                         >
-                          <option value="sftp">SFTP (SSH v2)</option>
-                          <option value="ftp">FTP / FTPS</option>
-                        </select>
+                          [ FTP (21) ]
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditingSite({
+                              ...editingSite,
+                              protocol: 'ftps',
+                              port: editingSite.port === 22 ? 21 : editingSite.port || 21,
+                            })
+                          }
+                          className={`py-1.5 px-2 font-black border text-xs ${
+                            editingSite.protocol === 'ftps'
+                              ? 'bg-nc-yellow text-nc-black border-nc-white'
+                              : 'bg-nc-blue text-nc-white border-nc-cyan hover:bg-nc-cyan hover:text-nc-black'
+                          }`}
+                        >
+                          [ FTPS / TLS (21) ]
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditingSite({
+                              ...editingSite,
+                              protocol: 'sftp',
+                              port: editingSite.port === 21 || editingSite.port === 990 ? 22 : editingSite.port || 22,
+                            })
+                          }
+                          className={`py-1.5 px-2 font-black border text-xs ${
+                            editingSite.protocol === 'sftp'
+                              ? 'bg-nc-yellow text-nc-black border-nc-white'
+                              : 'bg-nc-blue text-nc-white border-nc-cyan hover:bg-nc-cyan hover:text-nc-black'
+                          }`}
+                        >
+                          [ SFTP / SSH (22) ]
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2">
+                      <div className="col-span-3">
+                        <label className="text-nc-brightcyan font-bold block mb-0.5">Host / IP:</label>
+                        <input
+                          type="text"
+                          value={editingSite.host}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            let nextProto = editingSite.protocol;
+                            let nextPort = editingSite.port;
+                            const lower = val.trim().toLowerCase();
+                            if (lower.startsWith('ftps://')) {
+                              nextProto = 'ftps';
+                              if (nextPort === 22) nextPort = 21;
+                            } else if (lower.startsWith('ftp://') || (lower.startsWith('ftp.') && nextPort === 22 && nextProto === 'sftp')) {
+                              nextProto = 'ftp';
+                              nextPort = 21;
+                            } else if (lower.startsWith('sftp://')) {
+                              nextProto = 'sftp';
+                              if (nextPort === 21) nextPort = 22;
+                            }
+                            setEditingSite({
+                              ...editingSite,
+                              host: val,
+                              protocol: nextProto,
+                              port: nextPort,
+                            });
+                          }}
+                          onBlur={() => {
+                            const cleaned = cleanHostString(editingSite.host);
+                            if (cleaned && cleaned !== editingSite.host) {
+                              setEditingSite({ ...editingSite, host: cleaned });
+                            }
+                          }}
+                          placeholder="ftp.example.com"
+                          className={`w-full bg-nc-blue text-nc-white border p-1 outline-none ${
+                            editingSite.host.includes('@') ? 'border-nc-brightred' : 'border-nc-cyan'
+                          }`}
+                        />
                       </div>
 
-                      <div>
+                      <div className="col-span-1">
                         <label className="text-nc-brightcyan font-bold block mb-0.5">Port:</label>
                         <input
                           type="number"
-                          value={editingSite.port}
-                          onChange={(e) =>
-                            setEditingSite({ ...editingSite, port: parseInt(e.target.value) || 22 })
-                          }
+                          value={editingSite.port || ''}
+                          onChange={(e) => {
+                            const newPort = parseInt(e.target.value, 10) || 0;
+                            let nextProto = editingSite.protocol;
+                            if (newPort === 21 && editingSite.protocol === 'sftp') {
+                              nextProto = 'ftp';
+                            } else if (newPort === 990) {
+                              nextProto = 'ftps';
+                            } else if (newPort === 22) {
+                              nextProto = 'sftp';
+                            }
+                            setEditingSite({ ...editingSite, port: newPort, protocol: nextProto });
+                          }}
+                          onBlur={() => {
+                            if (!editingSite.port) {
+                              setEditingSite({
+                                ...editingSite,
+                                port: editingSite.protocol === 'sftp' ? 22 : 21,
+                              });
+                            }
+                          }}
                           className="w-full bg-nc-blue text-nc-white border border-nc-cyan p-1 outline-none"
                         />
                       </div>
                     </div>
 
-                    <div>
-                      <label className="text-nc-brightcyan font-bold block mb-0.5">Host / IP:</label>
-                      <input
-                        type="text"
-                        value={editingSite.host}
-                        onChange={(e) => setEditingSite({ ...editingSite, host: e.target.value })}
-                        className="w-full bg-nc-blue text-nc-white border border-nc-cyan p-1 outline-none"
-                      />
-                    </div>
+                    {editingSite.host.includes('@') && (
+                      <div className="bg-nc-brightred/90 text-nc-white p-1.5 border border-nc-yellow text-[11px] font-bold">
+                        ⚠️ Host contiene &apos;@&apos;: inserisci qui solo il dominio del server (es.{' '}
+                        <span className="text-nc-yellow">
+                          ftp.{editingSite.host.split('@').pop()}
+                        </span>
+                        ) e metti il nome utente completo nel campo Username!
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-2 gap-2">
                       <div>

@@ -120,7 +120,11 @@ export const App: React.FC = () => {
         title: 'DIRECTORY READ ERROR',
         message: `Failed to open directory:\n${targetPath}\n\n${msg}`,
       });
-      if (targetPath.startsWith('ftp://') || targetPath.startsWith('sftp://')) {
+      if (
+        targetPath.startsWith('ftp://') ||
+        targetPath.startsWith('ftps://') ||
+        targetPath.startsWith('sftp://')
+      ) {
         setLeftPath(homeDir);
       }
     }
@@ -142,7 +146,11 @@ export const App: React.FC = () => {
         title: 'DIRECTORY READ ERROR',
         message: `Failed to open directory:\n${targetPath}\n\n${msg}`,
       });
-      if (targetPath.startsWith('ftp://') || targetPath.startsWith('sftp://')) {
+      if (
+        targetPath.startsWith('ftp://') ||
+        targetPath.startsWith('ftps://') ||
+        targetPath.startsWith('sftp://')
+      ) {
         setRightPath(homeDir);
       }
     }

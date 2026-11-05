@@ -135,6 +135,7 @@ pub fn parse_cyberduck_duck(xml: &str, fallback_name: &str) -> Option<SiteConfig
         .to_lowercase();
 
     let is_sftp = protocol.contains("sftp") || protocol.contains("ssh");
+    let is_ftps = !is_sftp && (protocol.contains("ftps") || protocol.contains("ssl") || protocol.contains("tls"));
     let is_ftp = protocol.contains("ftp");
 
     if !is_sftp && !is_ftp {
@@ -164,13 +165,20 @@ pub fn parse_cyberduck_duck(xml: &str, fallback_name: &str) -> Option<SiteConfig
         .map(|k| expand_tilde(&k));
 
     let clean_fallback = fallback_name.trim_end_matches(".duck").trim_end_matches(".xml");
+    let proto_str = if is_sftp {
+        "sftp"
+    } else if is_ftps || port == 990 {
+        "ftps"
+    } else {
+        "ftp"
+    };
     let nickname = extract_plist_string(xml, "Nickname")
         .or_else(|| extract_plist_string(xml, "nickname"))
         .unwrap_or_else(|| {
             if !clean_fallback.is_empty() {
                 clean_fallback.to_string()
             } else {
-                format!("{} ({})", host, if is_sftp { "SFTP" } else { "FTP" })
+                format!("{} ({})", host, proto_str.to_uppercase())
             }
         });
 
@@ -179,7 +187,7 @@ pub fn parse_cyberduck_duck(xml: &str, fallback_name: &str) -> Option<SiteConfig
     Some(SiteConfig {
         id: site_id,
         name: nickname,
-        protocol: if is_sftp { "sftp".to_string() } else { "ftp".to_string() },
+        protocol: proto_str.to_string(),
         host,
         port,
         username,
