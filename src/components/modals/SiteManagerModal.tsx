@@ -958,9 +958,23 @@ export const SiteManagerModal: React.FC<SiteManagerModalProps> = ({
         </div>
 
         {/* Status / Notifications */}
+        {inProgress && (
+          <div className="bg-nc-yellow text-nc-black px-3 py-1.5 font-bold text-center text-xs animate-pulse border-y-2 border-nc-cyan">
+            ⏳ CONNECTING TO HOST... (RESOLVING, TCP HANDSHAKE & AUTHENTICATION)
+          </div>
+        )}
         {errorMsg && (
-          <div className="bg-nc-red text-nc-white px-3 py-1 font-bold text-center text-xs">
-            {errorMsg}
+          <div className="bg-nc-brightred text-nc-white px-3 py-2 font-bold text-xs border-y-2 border-nc-yellow flex items-center justify-between shadow-lg">
+            <div className="flex items-center space-x-2 overflow-hidden text-left">
+              <span className="text-base flex-shrink-0">⚠️</span>
+              <span className="truncate">{errorMsg}</span>
+            </div>
+            <button
+              onClick={() => setErrorMsg('')}
+              className="ml-3 bg-nc-black text-nc-yellow px-2 py-0.5 text-[11px] font-bold border border-nc-yellow hover:bg-nc-yellow hover:text-nc-black flex-shrink-0"
+            >
+              ✕ Dismiss
+            </button>
           </div>
         )}
         {successMsg && (

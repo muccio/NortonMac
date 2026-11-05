@@ -80,6 +80,12 @@ export const App: React.FC = () => {
     currentDir: '',
   });
 
+  const [errorAlert, setErrorAlert] = useState<{ open: boolean; title: string; message: string }>({
+    open: false,
+    title: '',
+    message: '',
+  });
+
   // Initial load
   useEffect(() => {
     const init = async () => {
@@ -108,8 +114,17 @@ export const App: React.FC = () => {
       setLeftIndex((prev) => Math.min(prev, Math.max(0, listing.entries.length - 1)));
     } catch (err: any) {
       console.error('Failed to list left directory:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      setErrorAlert({
+        open: true,
+        title: 'DIRECTORY READ ERROR',
+        message: `Failed to open directory:\n${targetPath}\n\n${msg}`,
+      });
+      if (targetPath.startsWith('ftp://') || targetPath.startsWith('sftp://')) {
+        setLeftPath(homeDir);
+      }
     }
-  }, [leftPath, leftShowHidden]);
+  }, [leftPath, leftShowHidden, homeDir]);
 
   // Refresh right panel
   const refreshRight = useCallback(async (path?: string) => {
@@ -121,8 +136,17 @@ export const App: React.FC = () => {
       setRightIndex((prev) => Math.min(prev, Math.max(0, listing.entries.length - 1)));
     } catch (err: any) {
       console.error('Failed to list right directory:', err);
+      const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
+      setErrorAlert({
+        open: true,
+        title: 'DIRECTORY READ ERROR',
+        message: `Failed to open directory:\n${targetPath}\n\n${msg}`,
+      });
+      if (targetPath.startsWith('ftp://') || targetPath.startsWith('sftp://')) {
+        setRightPath(homeDir);
+      }
     }
-  }, [rightPath, rightShowHidden]);
+  }, [rightPath, rightShowHidden, homeDir]);
 
   useEffect(() => {
     if (leftPath) refreshLeft(leftPath);
@@ -376,6 +400,13 @@ export const App: React.FC = () => {
       const target = e.target as HTMLElement;
       const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
 
+      // Allow ESC or Enter to close error dialog
+      if (errorAlert.open && (e.key === 'Escape' || e.key === 'Enter')) {
+        e.preventDefault();
+        setErrorAlert({ open: false, title: '', message: '' });
+        return;
+      }
+
       // Allow ESC to close modals even in inputs
       if (e.key === 'Escape') {
         if (helpOpen) setHelpOpen(false);
@@ -520,6 +551,7 @@ export const App: React.FC = () => {
     deleteState.open,
     copyMoveState.open,
     archiveState.open,
+    errorAlert.open,
     leftShowHidden,
     rightShowHidden,
   ]);
@@ -701,6 +733,37 @@ export const App: React.FC = () => {
           }}
           onClose={() => setArchiveState((prev) => ({ ...prev, open: false }))}
         />
+      )}
+
+      {/* Global Retro DOS Error Dialog */}
+      {errorAlert.open && (
+        <div className="fixed inset-0 bg-nc-black/85 flex items-center justify-center p-3 z-50 font-mono select-none">
+          <div className="bg-nc-blue border-4 border-nc-brightred text-nc-white w-full max-w-lg shadow-2xl flex flex-col">
+            <div className="bg-nc-brightred text-nc-white px-3 py-1 font-black text-xs flex justify-between items-center">
+              <span>⚠️ {errorAlert.title}</span>
+              <button
+                onClick={() => setErrorAlert({ open: false, title: '', message: '' })}
+                className="bg-nc-black text-nc-white hover:bg-nc-yellow hover:text-nc-black px-1.5 py-0.5 text-xs font-bold"
+              >
+                ✕ ESC
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="text-xs font-mono whitespace-pre-wrap bg-nc-darkblue p-3 border border-nc-cyan text-nc-yellow leading-relaxed max-h-60 overflow-y-auto">
+                {errorAlert.message}
+              </div>
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={() => setErrorAlert({ open: false, title: '', message: '' })}
+                  className="bg-nc-yellow text-nc-black hover:bg-nc-white font-black px-5 py-1.5 text-xs border border-nc-black shadow"
+                  autoFocus
+                >
+                  OK (ENTER / ESC)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

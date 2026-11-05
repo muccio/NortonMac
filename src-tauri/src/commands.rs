@@ -9,8 +9,10 @@ use crate::models::{
     DirectoryListing, FilePreview, HexLine, ShellOutput, SiteConfig, VolumeInfo,
 };
 use crate::remote_fs::{
-    download_sftp_file, list_ftp_directory, list_sftp_directory,
-    parse_remote_url, upload_sftp_file, RemoteManager,
+    create_ftp_directory, create_sftp_directory, delete_ftp_file, delete_sftp_file,
+    download_ftp_file, download_sftp_file, list_ftp_directory, list_sftp_directory,
+    parse_remote_url, test_ftp_connection, test_sftp_connection, upload_ftp_file,
+    upload_sftp_file, RemoteManager,
 };
 use crate::site_manager::{delete_site, load_sites, save_site};
 use base64::prelude::*;
@@ -160,7 +162,7 @@ pub async fn read_file_preview(
             .get_site(&site_id)
             .ok_or_else(|| "Remote site not found".to_string())?;
         let b = if proto == "ftp" {
-            return Err("FTP file download preview not directly streamable".to_string());
+            download_ftp_file(&site, &remote_path)?
         } else {
             download_sftp_file(&site, &remote_path)?
         };
@@ -287,12 +289,16 @@ pub async fn save_file_content(
     content: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if let Some((_proto, site_id, remote_path)) = parse_remote_url(&path) {
+    if let Some((proto, site_id, remote_path)) = parse_remote_url(&path) {
         let site = state
             .remote_manager
             .get_site(&site_id)
             .ok_or_else(|| "Remote site not found".to_string())?;
-        upload_sftp_file(&site, &remote_path, content.as_bytes())?;
+        if proto == "ftp" {
+            upload_ftp_file(&site, &remote_path, content.as_bytes())?;
+        } else {
+            upload_sftp_file(&site, &remote_path, content.as_bytes())?;
+        }
         return Ok(());
     }
 
@@ -318,9 +324,31 @@ pub fn open_file_native(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn create_directory(parent_path: String, name: String) -> Result<(), String> {
+pub fn create_directory(
+    parent_path: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     if parent_path.starts_with("archive://") {
         return Err("Cannot create directory inside virtual archive".to_string());
+    }
+
+    if let Some((proto, site_id, remote_path)) = parse_remote_url(&parent_path) {
+        let site = state
+            .remote_manager
+            .get_site(&site_id)
+            .ok_or_else(|| "Remote site not found".to_string())?;
+        let full_remote = if remote_path == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", remote_path.trim_end_matches('/'), name)
+        };
+        if proto == "ftp" {
+            create_ftp_directory(&site, &full_remote)?;
+        } else {
+            create_sftp_directory(&site, &full_remote)?;
+        }
+        return Ok(());
     }
 
     let target = Path::new(&parent_path).join(&name);
@@ -329,11 +357,29 @@ pub fn create_directory(parent_path: String, name: String) -> Result<(), String>
 }
 
 #[tauri::command]
-pub fn delete_items(paths: Vec<String>, permanent: bool) -> Result<(), String> {
+pub fn delete_items(
+    paths: Vec<String>,
+    permanent: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     for p in paths {
         if p.starts_with("archive://") {
             continue;
         }
+
+        if let Some((proto, site_id, remote_path)) = parse_remote_url(&p) {
+            let site = state
+                .remote_manager
+                .get_site(&site_id)
+                .ok_or_else(|| "Remote site not found".to_string())?;
+            if proto == "ftp" {
+                delete_ftp_file(&site, &remote_path)?;
+            } else {
+                delete_sftp_file(&site, &remote_path)?;
+            }
+            continue;
+        }
+
         if permanent {
             let path_obj = Path::new(&p);
             if path_obj.is_dir() {
@@ -363,12 +409,16 @@ pub async fn copy_items(
             continue;
         }
 
-        if let Some((_proto, site_id, remote_path)) = parse_remote_url(&src) {
+        if let Some((proto, site_id, remote_path)) = parse_remote_url(&src) {
             let site = state
                 .remote_manager
                 .get_site(&site_id)
                 .ok_or_else(|| "Remote site not found".to_string())?;
-            let data = download_sftp_file(&site, &remote_path)?;
+            let data = if proto == "ftp" {
+                download_ftp_file(&site, &remote_path)?
+            } else {
+                download_sftp_file(&site, &remote_path)?
+            };
             let file_name = Path::new(&remote_path)
                 .file_name()
                 .unwrap_or(Path::new("downloaded").as_os_str());
@@ -377,7 +427,7 @@ pub async fn copy_items(
             continue;
         }
 
-        if let Some((_proto, site_id, remote_path)) = parse_remote_url(&dest_dir) {
+        if let Some((proto, site_id, remote_path)) = parse_remote_url(&dest_dir) {
             let site = state
                 .remote_manager
                 .get_site(&site_id)
@@ -390,7 +440,11 @@ pub async fn copy_items(
                     .unwrap_or(Path::new("file").as_os_str())
                     .to_string_lossy();
                 let remote_target = format!("{}/{}", remote_path.trim_end_matches('/'), file_name);
-                upload_sftp_file(&site, &remote_target, &bytes)?;
+                if proto == "ftp" {
+                    upload_ftp_file(&site, &remote_target, &bytes)?;
+                } else {
+                    upload_sftp_file(&site, &remote_target, &bytes)?;
+                }
             }
             continue;
         }
@@ -502,7 +556,7 @@ pub fn delete_site_config(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn connect_site(
+pub async fn connect_site(
     site_id: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -514,6 +568,14 @@ pub fn connect_site(
 
     let default_path = site.default_path.clone().unwrap_or_else(|| "/".to_string());
     let proto = site.protocol.clone();
+
+    // Verify connection so that errors are reported immediately to the user!
+    if proto == "ftp" {
+        test_ftp_connection(&site)?;
+    } else {
+        test_sftp_connection(&site)?;
+    }
+
     state.remote_manager.register_session(site);
 
     Ok(format!("{}://{}{}", proto, site_id, if default_path.starts_with('/') { default_path } else { format!("/{}", default_path) }))

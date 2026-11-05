@@ -67,35 +67,150 @@ pub fn parse_remote_url(url: &str) -> Option<(String, String, String)> {
 }
 
 pub fn create_ssh_session(site: &SiteConfig) -> Result<(ssh2::Session, TcpStream), String> {
-    let addr = format!("{}:{}", site.host, site.port);
-    let tcp = TcpStream::connect(&addr).map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
-    
+    use std::net::ToSocketAddrs;
+    use std::time::Duration;
+
+    let addr_str = format!("{}:{}", site.host, site.port);
+    let addrs: Vec<std::net::SocketAddr> = addr_str
+        .to_socket_addrs()
+        .map_err(|e| format!("Could not resolve SSH server hostname '{}': {}", site.host, e))?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(format!("No IP address found for host '{}'", site.host));
+    }
+
+    let connect_timeout = Duration::from_secs(8);
+    let mut tcp_stream = None;
+    let mut last_err = None;
+
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, connect_timeout) {
+            Ok(s) => {
+                tcp_stream = Some(s);
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+
+    let tcp = tcp_stream.ok_or_else(|| {
+        format!(
+            "Connection to {}:{} timed out after 8s: {}",
+            site.host,
+            site.port,
+            last_err.map(|e| e.to_string()).unwrap_or_else(|| "Host unreachable".to_string())
+        )
+    })?;
+
+    tcp.set_read_timeout(Some(Duration::from_secs(15))).ok();
+    tcp.set_write_timeout(Some(Duration::from_secs(15))).ok();
+
     let mut sess = ssh2::Session::new().map_err(|e| e.to_string())?;
     sess.set_tcp_stream(tcp);
-    sess.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
+    sess.handshake().map_err(|e| format!("SSH handshake failed on {}:{}: {}", site.host, site.port, e))?;
 
     if let Some(key_path) = &site.private_key_path {
         if !key_path.is_empty() {
             let p = Path::new(key_path);
+            if !p.exists() {
+                return Err(format!("Private key file '{}' does not exist", key_path));
+            }
             sess.userauth_pubkey_file(&site.username, None, p, site.password.as_deref())
-                .map_err(|e| format!("Public key authentication failed: {}", e))?;
+                .map_err(|e| format!("Public key authentication failed with key '{}': {}", key_path, e))?;
             return Ok((sess, unsafe { std::mem::zeroed() }));
         }
     }
 
     if let Some(pwd) = &site.password {
         sess.userauth_password(&site.username, pwd)
-            .map_err(|e| format!("Password authentication failed: {}", e))?;
+            .map_err(|e| format!("Password authentication failed for user '{}': {}", site.username, e))?;
     } else {
         sess.userauth_agent(&site.username)
-            .map_err(|e| format!("Agent authentication failed: {}", e))?;
+            .map_err(|e| format!("SSH agent authentication failed for user '{}': {}", site.username, e))?;
     }
 
     if !sess.authenticated() {
-        return Err("SSH authentication failed".to_string());
+        return Err(format!("SSH authentication failed for user '{}'", site.username));
     }
 
     Ok((sess, unsafe { std::mem::zeroed() }))
+}
+
+pub fn test_sftp_connection(site: &SiteConfig) -> Result<(), String> {
+    let (sess, _) = create_ssh_session(site)?;
+    let sftp = sess.sftp().map_err(|e| format!("SFTP subsystem initialization failed: {}", e))?;
+    let _ = sftp.readdir(Path::new("/")).ok();
+    Ok(())
+}
+
+pub fn create_ftp_session(site: &SiteConfig) -> Result<FtpStream, String> {
+    use std::net::ToSocketAddrs;
+    use std::time::Duration;
+
+    let addr_str = format!("{}:{}", site.host, site.port);
+    let addrs: Vec<std::net::SocketAddr> = addr_str
+        .to_socket_addrs()
+        .map_err(|e| format!("Could not resolve FTP server hostname '{}': {}", site.host, e))?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(format!("No IP address found for host '{}'", site.host));
+    }
+
+    let connect_timeout = Duration::from_secs(8);
+    let mut tcp_stream = None;
+    let mut last_err = None;
+
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, connect_timeout) {
+            Ok(s) => {
+                tcp_stream = Some(s);
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+
+    let stream = tcp_stream.ok_or_else(|| {
+        format!(
+            "Connection to {}:{} timed out after 8s: {}",
+            site.host,
+            site.port,
+            last_err.map(|e| e.to_string()).unwrap_or_else(|| "Host unreachable or port closed".to_string())
+        )
+    })?;
+
+    stream.set_read_timeout(Some(Duration::from_secs(12))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(12))).ok();
+
+    let mut ftp = FtpStream::connect_with_stream(stream)
+        .map_err(|e| format!("FTP handshake failed on {}:{}: {}", site.host, site.port, e))?;
+
+    // Fix for servers behind NAT: replaces internal private IP in PASV with real server IP
+    ftp.set_passive_nat_workaround(true);
+    let passive_stream = ftp.passive_stream_builder(|addr| {
+        TcpStream::connect_timeout(&addr, Duration::from_secs(8))
+            .map_err(suppaftp::FtpError::ConnectionError)
+    });
+    let mut ftp = passive_stream;
+
+    let default_pwd = String::new();
+    let pwd = site.password.as_deref().unwrap_or(&default_pwd);
+    ftp.login(site.username.as_str(), pwd)
+        .map_err(|e| format!("FTP authentication failed for user '{}' on {}: {}", site.username, site.host, e))?;
+
+    Ok(ftp)
+}
+
+pub fn test_ftp_connection(site: &SiteConfig) -> Result<(), String> {
+    let mut ftp = create_ftp_session(site)?;
+    let _ = ftp.pwd().map_err(|e| format!("FTP PWD test command failed: {}", e))?;
+    Ok(())
 }
 
 pub fn list_sftp_directory(site: &SiteConfig, remote_path: &str) -> Result<DirectoryListing, String> {
@@ -233,23 +348,36 @@ pub fn create_sftp_directory(site: &SiteConfig, remote_path: &str) -> Result<(),
 }
 
 pub fn list_ftp_directory(site: &SiteConfig, remote_path: &str) -> Result<DirectoryListing, String> {
-    let addr = format!("{}:{}", site.host, site.port);
-    let mut ftp = FtpStream::connect(&addr).map_err(|e| format!("FTP connection error: {}", e))?;
-    
-    let default_pwd = String::new();
-    let pwd = site.password.as_ref().unwrap_or(&default_pwd);
-    ftp.login(&site.username, pwd).map_err(|e| format!("FTP login failed: {}", e))?;
+    let mut ftp = create_ftp_session(site)?;
 
     let clean_path = if remote_path.is_empty() { "/" } else { remote_path };
-    if clean_path != "/" {
-        ftp.cwd(clean_path).map_err(|e| format!("FTP cwd failed: {}", e))?;
+
+    if clean_path != "/" && !clean_path.is_empty() && clean_path != "." {
+        if let Err(e1) = ftp.cwd(clean_path) {
+            let alt_path = clean_path.trim_start_matches('/');
+            if let Err(e2) = ftp.cwd(alt_path) {
+                return Err(format!("FTP cwd to '{}' failed: {} ({})", clean_path, e1, e2));
+            }
+        }
     }
 
     let mut entries: Vec<FileEntry> = Vec::new();
 
-    if clean_path != "/" {
-        let parent = Path::new(clean_path).parent().unwrap_or(Path::new("/")).to_string_lossy().to_string();
-        let parent_url = format!("ftp://{}{}", site.id, if parent.starts_with('/') { parent } else { format!("/{}", parent) });
+    if clean_path != "/" && !clean_path.is_empty() {
+        let parent = Path::new(clean_path)
+            .parent()
+            .unwrap_or(Path::new("/"))
+            .to_string_lossy()
+            .to_string();
+        let parent_url = format!(
+            "ftp://{}{}",
+            site.id,
+            if parent.starts_with('/') {
+                parent
+            } else {
+                format!("/{}", parent)
+            }
+        );
         entries.push(FileEntry {
             name: "..".to_string(),
             path: parent_url,
@@ -263,20 +391,86 @@ pub fn list_ftp_directory(site: &SiteConfig, remote_path: &str) -> Result<Direct
         });
     }
 
-    let lines = ftp.list(None).map_err(|e| format!("FTP list failed: {}", e))?;
+    let lines = ftp
+        .list(None)
+        .map_err(|e| format!("FTP directory listing failed for '{}': {}", clean_path, e))?;
+
     for line in lines {
-        let parts: Vec<&str> = line.split_whitespace().collect();
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.to_lowercase().starts_with("total ") {
+            continue;
+        }
+
+        // Try standard suppaftp parser first
+        if let Ok(file) = suppaftp::list::File::try_from(trimmed) {
+            let file_name = file.name().to_string();
+            if file_name == "." || file_name == ".." || file_name.is_empty() {
+                continue;
+            }
+
+            let is_dir = file.is_directory();
+            let is_symlink = file.is_symlink();
+            let size = file.size() as u64;
+
+            let mod_time = {
+                let dt: chrono::DateTime<chrono::Utc> = file.modified().into();
+                dt.format("%Y-%m-%d %H:%M").to_string()
+            };
+
+            let child_path = if clean_path == "/" {
+                format!("/{}", file_name)
+            } else {
+                format!("{}/{}", clean_path.trim_end_matches('/'), file_name)
+            };
+
+            let ext = Path::new(&file_name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            let is_arch = ext == "zip" || ext == "tar" || ext == "gz" || ext == "tgz" || ext == "bz2";
+
+            entries.push(FileEntry {
+                name: file_name,
+                path: format!("ftp://{}{}", site.id, child_path),
+                size,
+                is_dir,
+                is_symlink,
+                is_archive: is_arch,
+                modified: mod_time,
+                permissions: if is_dir {
+                    "drwxr-xr-x".to_string()
+                } else {
+                    "-rw-r--r--".to_string()
+                },
+                extension: ext,
+            });
+            continue;
+        }
+
+        // Fallback parser if suppaftp::list::File fails
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.is_empty() {
             continue;
         }
 
-        let is_dir = line.starts_with('d');
-        let file_name = parts.last().unwrap_or(&"").to_string();
-        if file_name == "." || file_name == ".." {
+        let is_dir = trimmed.starts_with('d') || trimmed.contains("<DIR>");
+        let file_name = if parts.len() >= 9
+            && (trimmed.starts_with('-') || trimmed.starts_with('d') || trimmed.starts_with('l'))
+        {
+            parts[8..].join(" ")
+        } else if parts.len() >= 4 && trimmed.contains("<DIR>") {
+            parts[3..].join(" ")
+        } else {
+            parts.last().unwrap_or(&"").to_string()
+        };
+
+        if file_name == "." || file_name == ".." || file_name.is_empty() {
             continue;
         }
 
-        let size: u64 = if parts.len() >= 5 {
+        let size: u64 = if parts.len() >= 5 && !trimmed.contains("<DIR>") {
             parts[4].parse().unwrap_or(0)
         } else {
             0
@@ -294,15 +488,21 @@ pub fn list_ftp_directory(site: &SiteConfig, remote_path: &str) -> Result<Direct
             .unwrap_or("")
             .to_lowercase();
 
+        let is_arch = ext == "zip" || ext == "tar" || ext == "gz" || ext == "tgz" || ext == "bz2";
+
         entries.push(FileEntry {
             name: file_name,
             path: format!("ftp://{}{}", site.id, child_path),
             size,
             is_dir,
-            is_symlink: false,
-            is_archive: false,
+            is_symlink: trimmed.starts_with('l'),
+            is_archive: is_arch,
             modified: "-".to_string(),
-            permissions: if is_dir { "drwxr-xr-x".to_string() } else { "-rw-r--r--".to_string() },
+            permissions: if is_dir {
+                "drwxr-xr-x".to_string()
+            } else {
+                "-rw-r--r--".to_string()
+            },
             extension: ext,
         });
     }
@@ -331,4 +531,47 @@ pub fn list_ftp_directory(site: &SiteConfig, remote_path: &str) -> Result<Direct
         entries,
         show_hidden: true,
     })
+}
+
+pub fn download_ftp_file(site: &SiteConfig, remote_path: &str) -> Result<Vec<u8>, String> {
+    let mut ftp = create_ftp_session(site)?;
+    let clean_path = remote_path.trim_start_matches('/');
+    let cursor = ftp
+        .retr_as_buffer(clean_path)
+        .or_else(|_| ftp.retr_as_buffer(remote_path))
+        .map_err(|e| format!("Failed to download FTP file '{}': {}", remote_path, e))?;
+    Ok(cursor.into_inner())
+}
+
+pub fn upload_ftp_file(site: &SiteConfig, remote_path: &str, data: &[u8]) -> Result<(), String> {
+    let mut ftp = create_ftp_session(site)?;
+    let clean_path = remote_path.trim_start_matches('/');
+    let mut cursor = std::io::Cursor::new(data);
+    ftp.put_file(clean_path, &mut cursor)
+        .or_else(|_| {
+            let mut c2 = std::io::Cursor::new(data);
+            ftp.put_file(remote_path, &mut c2)
+        })
+        .map_err(|e| format!("Failed to upload FTP file '{}': {}", remote_path, e))?;
+    Ok(())
+}
+
+pub fn delete_ftp_file(site: &SiteConfig, remote_path: &str) -> Result<(), String> {
+    let mut ftp = create_ftp_session(site)?;
+    let clean_path = remote_path.trim_start_matches('/');
+    if let Err(e1) = ftp.rm(clean_path) {
+        if let Err(e2) = ftp.rmdir(clean_path) {
+            return Err(format!("Failed to delete FTP file/directory '{}': {} ({})", remote_path, e1, e2));
+        }
+    }
+    Ok(())
+}
+
+pub fn create_ftp_directory(site: &SiteConfig, remote_path: &str) -> Result<(), String> {
+    let mut ftp = create_ftp_session(site)?;
+    let clean_path = remote_path.trim_start_matches('/');
+    ftp.mkdir(clean_path)
+        .or_else(|_| ftp.mkdir(remote_path))
+        .map_err(|e| format!("Failed to create FTP directory '{}': {}", remote_path, e))?;
+    Ok(())
 }
