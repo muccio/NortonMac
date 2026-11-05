@@ -1,5 +1,6 @@
 pub mod archive_vfs;
 pub mod commands;
+pub mod importers;
 pub mod local_fs;
 pub mod models;
 pub mod remote_fs;
@@ -34,6 +35,10 @@ pub fn run() {
             commands::save_site_config,
             commands::delete_site_config,
             commands::connect_site,
+            commands::detect_external_sites,
+            commands::parse_imported_sites,
+            commands::import_sites_batch,
+            commands::export_sites_to_json,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

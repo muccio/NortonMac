@@ -70,4 +70,11 @@ export interface SiteConfig {
   default_path?: string;
 }
 
+export interface DiscoveredSite {
+  id: string;
+  source_app: string;
+  file_path: string;
+  site: SiteConfig;
+}
+
 export type ActivePane = 'left' | 'right';

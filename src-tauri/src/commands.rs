@@ -518,3 +518,23 @@ pub fn connect_site(
 
     Ok(format!("{}://{}{}", proto, site_id, if default_path.starts_with('/') { default_path } else { format!("/{}", default_path) }))
 }
+
+#[tauri::command]
+pub fn detect_external_sites() -> Result<Vec<crate::importers::DiscoveredSite>, String> {
+    Ok(crate::importers::scan_discovered_sites())
+}
+
+#[tauri::command]
+pub fn parse_imported_sites(content: String) -> Result<Vec<SiteConfig>, String> {
+    Ok(crate::importers::parse_imported_content(&content))
+}
+
+#[tauri::command]
+pub fn import_sites_batch(sites: Vec<SiteConfig>, overwrite: bool) -> Result<usize, String> {
+    crate::site_manager::save_multiple_sites(sites, overwrite)
+}
+
+#[tauri::command]
+pub fn export_sites_to_json() -> Result<String, String> {
+    crate::site_manager::export_sites_json()
+}

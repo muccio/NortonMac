@@ -65,4 +65,20 @@ export const api = {
   connectSite: async (siteId: string): Promise<string> => {
     return await invoke('connect_site', { siteId });
   },
+
+  detectExternalSites: async (): Promise<import('./types').DiscoveredSite[]> => {
+    return await invoke('detect_external_sites');
+  },
+
+  parseImportedSites: async (content: string): Promise<SiteConfig[]> => {
+    return await invoke('parse_imported_sites', { content });
+  },
+
+  importSitesBatch: async (sites: SiteConfig[], overwrite: boolean): Promise<number> => {
+    return await invoke('import_sites_batch', { sites, overwrite });
+  },
+
+  exportSitesToJson: async (): Promise<string> => {
+    return await invoke('export_sites_to_json');
+  },
 };
