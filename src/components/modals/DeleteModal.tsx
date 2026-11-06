@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 interface DeleteModalProps {
   names: string[];
@@ -14,8 +14,11 @@ export const DeleteModal: React.FC<DeleteModalProps> = ({
   const [permanent, setPermanent] = useState(false);
   const [inProgress, setInProgress] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const deleteBtnRef = useRef<HTMLButtonElement>(null);
+  const cancelBtnRef = useRef<HTMLButtonElement>(null);
 
-  const handleDelete = async () => {
+  const handleDelete = useCallback(async () => {
+    if (inProgress) return;
     setInProgress(true);
     setErrorMsg('');
     try {
@@ -26,7 +29,46 @@ export const DeleteModal: React.FC<DeleteModalProps> = ({
     } finally {
       setInProgress(false);
     }
-  };
+  }, [inProgress, onConfirm, permanent, onClose]);
+
+  useEffect(() => {
+    deleteBtnRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (inProgress) return;
+
+      if (e.key === 'F8') {
+        e.preventDefault();
+        e.stopPropagation();
+        handleDelete();
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        if (document.activeElement === cancelBtnRef.current) {
+          e.preventDefault();
+          e.stopPropagation();
+          onClose();
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        handleDelete();
+        return;
+      }
+
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        e.stopPropagation();
+        setPermanent((prev) => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [handleDelete, inProgress, onClose]);
 
   return (
     <div className="fixed inset-0 bg-nc-black/80 flex items-center justify-center p-4 z-50 font-mono select-none">
@@ -80,16 +122,20 @@ export const DeleteModal: React.FC<DeleteModalProps> = ({
 
           <div className="flex justify-center space-x-4 pt-3">
             <button
+              ref={deleteBtnRef}
+              type="button"
               onClick={handleDelete}
               disabled={inProgress}
-              className="bg-nc-red text-nc-white hover:bg-nc-brightred font-bold px-6 py-1.5 text-xs border border-nc-white"
+              className="bg-nc-red text-nc-white hover:bg-nc-brightred focus:ring-2 focus:ring-nc-yellow outline-none font-bold px-6 py-1.5 text-xs border border-nc-white"
             >
-              {inProgress ? 'DELETING...' : '[ DELETE (F8) ]'}
+              {inProgress ? 'DELETING...' : '[ DELETE (F8 / ENTER) ]'}
             </button>
             <button
+              ref={cancelBtnRef}
+              type="button"
               onClick={onClose}
               disabled={inProgress}
-              className="bg-nc-darkblue text-nc-white hover:bg-nc-yellow hover:text-nc-black font-bold px-6 py-1.5 text-xs border border-nc-cyan"
+              className="bg-nc-darkblue text-nc-white hover:bg-nc-yellow hover:text-nc-black focus:ring-2 focus:ring-nc-yellow outline-none font-bold px-6 py-1.5 text-xs border border-nc-cyan"
             >
               [ CANCEL (ESC) ]
             </button>

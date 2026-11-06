@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { DirectoryListing, FileEntry } from '../types';
+import { DirectoryListing, FileEntry, SortConfig, SortField } from '../types';
 
 interface FilePanelProps {
   panelId: 'left' | 'right';
@@ -9,6 +9,9 @@ interface FilePanelProps {
   selectedPaths: Set<string>;
   calculatedSizes: Record<string, number>;
   calculatingPaths: Set<string>;
+  sortConfig: SortConfig;
+  quickSearch?: { query: string; matched: boolean } | null;
+  onSortChange: (field: SortField) => void;
   onSelectIndex: (idx: number) => void;
   onToggleMark: (entry: FileEntry, advanceCursor?: boolean) => void;
   onEnter: (entry: FileEntry) => void;
@@ -24,6 +27,9 @@ export const FilePanel: React.FC<FilePanelProps> = ({
   selectedPaths,
   calculatedSizes,
   calculatingPaths,
+  sortConfig,
+  quickSearch,
+  onSortChange,
   onSelectIndex,
   onToggleMark,
   onEnter,
@@ -109,12 +115,98 @@ export const FilePanel: React.FC<FilePanelProps> = ({
         </div>
       </div>
 
-      {/* Column Headers */}
+      {/* Column Headers (Clickable for Sorting) */}
       <div className="bg-nc-darkblue text-nc-brightcyan font-bold grid grid-cols-12 px-2 py-0.5 border-b border-nc-cyan text-[11px]">
-        <div className="col-span-5 border-r border-nc-cyan/40 pr-1">Name</div>
-        <div className="col-span-2 text-right border-r border-nc-cyan/40 px-1">Size</div>
-        <div className="col-span-3 text-center border-r border-nc-cyan/40 px-1">Date Time</div>
-        <div className="col-span-2 text-center pl-1">Perms</div>
+        <div className="col-span-5 border-r border-nc-cyan/40 pr-1 flex items-center justify-between gap-1">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onActivate();
+              onSortChange('name');
+            }}
+            className={`flex items-center gap-1 hover:text-nc-yellow transition-colors truncate ${
+              sortConfig.field === 'name' ? 'text-nc-yellow underline decoration-nc-cyan/70' : ''
+            }`}
+            title="Ordina per nome (A-Z / Z-A)"
+          >
+            <span>Name</span>
+            {sortConfig.field === 'name' && (
+              <span className="text-[10px]">{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onActivate();
+              onSortChange('ext');
+            }}
+            className={`px-1 rounded text-[10px] hover:text-nc-yellow transition-colors flex-shrink-0 ${
+              sortConfig.field === 'ext'
+                ? 'bg-nc-cyan/20 text-nc-yellow border border-nc-yellow/60'
+                : 'text-nc-cyan/90 hover:bg-nc-cyan/10'
+            }`}
+            title="Ordina per estensione (.ext)"
+          >
+            Ext{sortConfig.field === 'ext' ? (sortConfig.direction === 'asc' ? '▲' : '▼') : ''}
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onActivate();
+            onSortChange('size');
+          }}
+          className={`col-span-2 text-right border-r border-nc-cyan/40 px-1 flex items-center justify-end gap-1 hover:text-nc-yellow transition-colors ${
+            sortConfig.field === 'size' ? 'text-nc-yellow underline decoration-nc-cyan/70' : ''
+          }`}
+          title="Ordina per dimensione"
+        >
+          <span>Size</span>
+          {sortConfig.field === 'size' && (
+            <span className="text-[10px]">{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onActivate();
+            onSortChange('modified');
+          }}
+          className={`col-span-3 text-center border-r border-nc-cyan/40 px-1 flex items-center justify-center gap-1 hover:text-nc-yellow transition-colors ${
+            sortConfig.field === 'modified' ? 'text-nc-yellow underline decoration-nc-cyan/70' : ''
+          }`}
+          title="Ordina per data e ora di modifica"
+        >
+          <span>Date Time</span>
+          {sortConfig.field === 'modified' && (
+            <span className="text-[10px]">{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onActivate();
+            onSortChange('permissions');
+          }}
+          className={`col-span-2 text-center pl-1 flex items-center justify-center gap-1 hover:text-nc-yellow transition-colors ${
+            sortConfig.field === 'permissions' ? 'text-nc-yellow underline decoration-nc-cyan/70' : ''
+          }`}
+          title="Ordina per permessi"
+        >
+          <span>Perms</span>
+          {sortConfig.field === 'permissions' && (
+            <span className="text-[10px]">{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>
+          )}
+        </button>
       </div>
 
       {/* File List Body */}
@@ -220,6 +312,23 @@ export const FilePanel: React.FC<FilePanelProps> = ({
           })
         )}
       </div>
+
+      {/* Type-Ahead Quick Jump Indicator */}
+      {isActive && quickSearch && quickSearch.query && (
+        <div
+          className={`absolute bottom-7 left-2 z-20 px-2.5 py-0.5 border-2 shadow-lg font-mono text-xs font-bold flex items-center space-x-1.5 ${
+            quickSearch.matched
+              ? 'bg-nc-darkblue border-nc-yellow text-nc-yellow'
+              : 'bg-nc-red border-nc-white text-nc-white'
+          }`}
+        >
+          <span className={quickSearch.matched ? 'text-nc-brightcyan' : 'text-nc-yellow'}>
+            JUMP:
+          </span>
+          <span>{quickSearch.query}</span>
+          <span className="animate-pulse">█</span>
+        </div>
+      )}
 
       {/* Bottom Panel Status Bar */}
       <div className="bg-nc-darkblue text-nc-brightcyan px-2 py-0.5 border-t border-nc-cyan flex items-center justify-between text-[11px] font-bold">

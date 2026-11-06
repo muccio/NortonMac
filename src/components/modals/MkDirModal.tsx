@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 interface MkDirModalProps {
   currentDir: string;
@@ -15,10 +15,8 @@ export const MkDirModal: React.FC<MkDirModalProps> = ({
   const [inProgress, setInProgress] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-
+  const runCreate = useCallback(async () => {
+    if (inProgress || !name.trim()) return;
     setInProgress(true);
     setErrorMsg('');
     try {
@@ -29,7 +27,24 @@ export const MkDirModal: React.FC<MkDirModalProps> = ({
     } finally {
       setInProgress(false);
     }
+  }, [inProgress, name, onCreate, onClose]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await runCreate();
   };
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F7') {
+        e.preventDefault();
+        e.stopPropagation();
+        runCreate();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [runCreate]);
 
   return (
     <div className="fixed inset-0 bg-nc-black/80 flex items-center justify-center p-4 z-50 font-mono select-none">

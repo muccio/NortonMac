@@ -42,6 +42,10 @@ export const api = {
     return await invoke('move_items', { sources, destDir, overwrite });
   },
 
+  duplicateItems: async (sources: string[], newName?: string): Promise<string[]> => {
+    return await invoke('duplicate_items', { sources, newName: newName ?? null });
+  },
+
   createArchive: async (sources: string[], archivePath: string, archiveType: string): Promise<void> => {
     return await invoke('create_archive', { sources, archivePath, archiveType });
   },

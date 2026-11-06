@@ -21,9 +21,13 @@ export const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
             <ul className="mt-1 space-y-1 text-nc-white">
               <li><span className="text-nc-brightcyan font-bold">Tab</span> : Switch focus between Left and Right panel</li>
               <li><span className="text-nc-brightcyan font-bold">↑ / ↓</span> : Navigate file list up and down</li>
+              <li><span className="text-nc-brightcyan font-bold">A-Z / 0-9 (Digita)</span> : Quick-jump to item starting with typed letters</li>
               <li><span className="text-nc-brightcyan font-bold">Enter</span> : Open directory, enter Virtual Archive (.zip/.tar.gz), or execute</li>
               <li><span className="text-nc-brightcyan font-bold">Backspace / ..</span> : Move up to parent directory (positions cursor on the exited folder)</li>
               <li><span className="text-nc-brightcyan font-bold">Space / Insert</span> : Mark / unmark item &amp; calculate directory recursive size</li>
+              <li><span className="text-nc-brightcyan font-bold">Numpad * (o Cmd+A)</span> : Select all items in active panel (press * again to deselect)</li>
+              <li><span className="text-nc-brightcyan font-bold">Cmd + D / Shift + F5</span> : Duplicate file or folder in place (Local &amp; FTP/FTPS/SFTP)</li>
+              <li><span className="text-nc-brightcyan font-bold">Click Colonne</span> : Sort panel by Name, Ext, Size, Date Time, or Perms (▲ / ▼)</li>
               <li><span className="text-nc-brightcyan font-bold">Cmd + .</span> : Toggle macOS Unix dotfiles and hidden files</li>
               <li><span className="text-nc-brightcyan font-bold">Cmd + ,</span> : Open GUI, Cursor &amp; Selection Color Editor</li>
             </ul>

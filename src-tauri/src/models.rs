@@ -80,11 +80,12 @@ pub struct SiteConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CopyProgress {
+pub struct TransferProgress {
+    pub operation: String, // "copy" | "move"
     pub current_file: String,
-    pub files_copied: usize,
+    pub files_done: usize,
     pub total_files: usize,
-    pub bytes_copied: u64,
+    pub bytes_done: u64,
     pub total_bytes: u64,
-    pub done: bool,
+    pub percent: f64,
 }

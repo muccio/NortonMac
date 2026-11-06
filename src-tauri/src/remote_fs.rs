@@ -1,5 +1,6 @@
+use crate::local_fs::make_unique_duplicate_name;
 use crate::models::{DirectoryListing, FileEntry, SiteConfig};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
@@ -1045,6 +1046,572 @@ pub fn calculate_ftp_item_size(site: &SiteConfig, remote_path: &str) -> Result<u
     let size = walk_ftp(&mut ftp, remote_path, 0);
     let _ = ftp.quit();
     Ok(size)
+}
+
+fn split_remote_parent_and_name(remote_path: &str) -> Result<(String, String), String> {
+    let trimmed = remote_path.trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "/" {
+        return Err("Impossibile duplicare la directory radice '/'".to_string());
+    }
+    let p = Path::new(trimmed);
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("Percorso remoto non valido: '{}'", remote_path))?
+        .to_string();
+    let parent = p
+        .parent()
+        .map(|pp| {
+            let s = pp.to_string_lossy().to_string();
+            if s.is_empty() {
+                "/".to_string()
+            } else {
+                s
+            }
+        })
+        .unwrap_or_else(|| "/".to_string());
+    Ok((parent, name))
+}
+
+fn join_remote_path(parent: &str, name: &str) -> String {
+    if parent == "/" || parent.is_empty() {
+        format!("/{}", name.trim_start_matches('/'))
+    } else {
+        format!(
+            "{}/{}",
+            parent.trim_end_matches('/'),
+            name.trim_start_matches('/')
+        )
+    }
+}
+
+pub fn duplicate_sftp_items_with_progress<F>(
+    site: &SiteConfig,
+    items: &[(String, Option<String>)],
+    on_progress: &mut F,
+) -> Result<Vec<String>, String>
+where
+    F: FnMut(&str, u64, u64, usize, usize, bool),
+{
+    let sess = create_ssh_session(site)?;
+    sess.set_timeout(20_000);
+    let sftp = sess
+        .sftp()
+        .map_err(|e| format!("Inizializzazione SFTP fallita: {}", e))?;
+
+    let mut dirs_to_create: Vec<String> = Vec::new();
+    // (src_file, dst_file, display_name, size, mode)
+    let mut files_to_copy: Vec<(String, String, String, u64, i32)> = Vec::new();
+    let mut created_names: Vec<String> = Vec::new();
+    let mut parent_existing_cache: HashMap<String, HashSet<String>> = HashMap::new();
+
+    fn collect_sftp_tree(
+        sftp: &ssh2::Sftp,
+        src_dir: &str,
+        dst_dir: &str,
+        depth: usize,
+        dirs_out: &mut Vec<String>,
+        files_out: &mut Vec<(String, String, String, u64, i32)>,
+    ) -> Result<(), String> {
+        if depth > 16 {
+            return Err("Profondità massima cartelle SFTP superata (16 livelli)".to_string());
+        }
+        dirs_out.push(dst_dir.to_string());
+        let entries = sftp
+            .readdir(Path::new(src_dir))
+            .map_err(|e| format!("Errore lettura cartella SFTP '{}': {}", src_dir, e))?;
+
+        for (child_path, stat) in entries {
+            let fname = child_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if fname.is_empty() || fname == "." || fname == ".." {
+                continue;
+            }
+            let child_src = join_remote_path(src_dir, &fname);
+            let child_dst = join_remote_path(dst_dir, &fname);
+            if stat.is_dir() && !stat.file_type().is_symlink() {
+                collect_sftp_tree(sftp, &child_src, &child_dst, depth + 1, dirs_out, files_out)?;
+            } else if !stat.file_type().is_symlink() {
+                let sz = stat.size.unwrap_or(0);
+                let mode = stat.perm.unwrap_or(0o644) as i32 & 0o777;
+                files_out.push((child_src, child_dst, fname, sz, mode));
+            }
+        }
+        Ok(())
+    }
+
+    for (src_raw, explicit_name) in items {
+        let (parent_dir, src_name) = split_remote_parent_and_name(src_raw)?;
+
+        if !parent_existing_cache.contains_key(&parent_dir) {
+            let mut set = HashSet::new();
+            if let Ok(entries) = sftp.readdir(Path::new(&parent_dir)) {
+                for (p, _) in entries {
+                    if let Some(n) = p.file_name().and_then(|s| s.to_str()) {
+                        set.insert(n.to_lowercase());
+                    }
+                }
+            }
+            parent_existing_cache.insert(parent_dir.clone(), set);
+        }
+        let existing_lower = parent_existing_cache.get_mut(&parent_dir).unwrap();
+
+        let stat = sftp
+            .stat(Path::new(src_raw))
+            .map_err(|e| format!("Elemento SFTP '{}' non trovato: {}", src_raw, e))?;
+        let is_dir = stat.is_dir();
+
+        let target_name = match explicit_name {
+            Some(raw_custom) if !raw_custom.trim().is_empty() => {
+                let clean = raw_custom.trim().trim_matches('/').to_string();
+                if clean.contains('/') {
+                    return Err("Il nome del duplicato non può contenere '/'".to_string());
+                }
+                let candidate_dst = join_remote_path(&parent_dir, &clean);
+                if sftp.lstat(Path::new(&candidate_dst)).is_ok() {
+                    return Err(format!(
+                        "Esiste già un elemento chiamato '{}' nella cartella remota",
+                        clean
+                    ));
+                }
+                existing_lower.insert(clean.to_lowercase());
+                clean
+            }
+            _ => {
+                let generated = make_unique_duplicate_name(&src_name, is_dir, existing_lower);
+                existing_lower.insert(generated.to_lowercase());
+                generated
+            }
+        };
+
+        let dst_path = join_remote_path(&parent_dir, &target_name);
+        created_names.push(target_name.clone());
+
+        if is_dir {
+            collect_sftp_tree(
+                &sftp,
+                src_raw,
+                &dst_path,
+                0,
+                &mut dirs_to_create,
+                &mut files_to_copy,
+            )?;
+        } else {
+            let sz = stat.size.unwrap_or(0);
+            let mode = stat.perm.unwrap_or(0o644) as i32 & 0o777;
+            files_to_copy.push((src_raw.clone(), dst_path, target_name, sz, mode));
+        }
+    }
+
+    let total_files = files_to_copy.len().max(created_names.len().max(1));
+    let total_bytes: u64 = files_to_copy.iter().map(|f| f.3).sum();
+    let mut bytes_done = 0u64;
+    let mut files_done = 0usize;
+
+    let initial_label = files_to_copy
+        .first()
+        .map(|f| f.2.clone())
+        .or_else(|| created_names.first().cloned())
+        .unwrap_or_else(|| "remote".to_string());
+    on_progress(&initial_label, 0, total_bytes, 0, total_files, true);
+
+    for d in &dirs_to_create {
+        sftp.mkdir(Path::new(d), 0o755)
+            .map_err(|e| format!("Impossibile creare la cartella SFTP '{}': {}", d, e))?;
+    }
+
+    let mut buf = vec![0u8; 128 * 1024];
+    for (src_f, dst_f, display_name, _sz, mode) in &files_to_copy {
+        on_progress(
+            display_name,
+            bytes_done,
+            total_bytes,
+            files_done,
+            total_files,
+            true,
+        );
+        let mut reader = sftp
+            .open(Path::new(src_f))
+            .map_err(|e| format!("Impossibile aprire '{}' su SFTP: {}", src_f, e))?;
+        let mut writer = sftp
+            .open_mode(
+                Path::new(dst_f),
+                ssh2::OpenFlags::CREATE | ssh2::OpenFlags::TRUNCATE | ssh2::OpenFlags::WRITE,
+                if *mode > 0 { *mode } else { 0o644 },
+                ssh2::OpenType::File,
+            )
+            .map_err(|e| format!("Impossibile creare '{}' su SFTP: {}", dst_f, e))?;
+
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| format!("Errore lettura SFTP '{}': {}", src_f, e))?;
+            if n == 0 {
+                break;
+            }
+            writer
+                .write_all(&buf[..n])
+                .map_err(|e| format!("Errore scrittura SFTP '{}': {}", dst_f, e))?;
+            bytes_done = bytes_done.saturating_add(n as u64);
+            on_progress(
+                display_name,
+                bytes_done,
+                total_bytes,
+                files_done,
+                total_files,
+                false,
+            );
+        }
+        writer.flush().ok();
+        files_done += 1;
+        on_progress(
+            display_name,
+            bytes_done,
+            total_bytes,
+            files_done,
+            total_files,
+            true,
+        );
+    }
+
+    Ok(created_names)
+}
+
+fn ftp_cd_abs(ftp: &mut NativeTlsFtpStream, base_pwd: &str, remote_dir: &str) -> Result<(), String> {
+    if remote_dir.is_empty() || remote_dir == "/" {
+        return ftp
+            .cwd("/")
+            .or_else(|_| ftp.cwd(base_pwd))
+            .map_err(|e| format!("Impossibile accedere alla radice FTP: {}", e));
+    }
+    if ftp.cwd(remote_dir).is_ok() {
+        return Ok(());
+    }
+    let _ = ftp.cwd("/").or_else(|_| ftp.cwd(base_pwd));
+    ftp.cwd(remote_dir.trim_start_matches('/'))
+        .map_err(|e| format!("Impossibile accedere alla cartella FTP '{}': {}", remote_dir, e))
+}
+
+fn ftp_mkdir_abs(ftp: &mut NativeTlsFtpStream, base_pwd: &str, remote_dir: &str) -> Result<(), String> {
+    let _ = ftp_cd_abs(ftp, base_pwd, "/");
+    ftp.mkdir(remote_dir)
+        .or_else(|_| ftp.mkdir(remote_dir.trim_start_matches('/')))
+        .map_err(|e| format!("Impossibile creare la cartella FTP '{}': {}", remote_dir, e))
+}
+
+fn ftp_list_dir_meta(
+    ftp: &mut NativeTlsFtpStream,
+    base_pwd: &str,
+    dir_path: &str,
+) -> Result<Vec<(String, bool, u64)>, String> {
+    ftp_cd_abs(ftp, base_pwd, dir_path)?;
+    let mut out = Vec::new();
+
+    if let Ok(mlsd_lines) = ftp.mlsd(None) {
+        for raw in mlsd_lines {
+            let line = raw.trim_end_matches(&['\r', '\n'][..]);
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(f) = ListParser::parse_mlsd(line) {
+                let name = f.name().to_string();
+                if name == "." || name == ".." || name.is_empty() {
+                    continue;
+                }
+                if !f.is_symlink() {
+                    out.push((name, f.is_directory(), f.size() as u64));
+                }
+            } else if let Some(sep_idx) = line.find("; ") {
+                let facts = &line[..sep_idx];
+                let facts_lower = facts.to_lowercase();
+                let name = line[sep_idx + 2..].to_string();
+                if name == "."
+                    || name == ".."
+                    || name.is_empty()
+                    || facts_lower.contains("type=cdir")
+                    || facts_lower.contains("type=pdir")
+                    || facts_lower.contains("slink")
+                {
+                    continue;
+                }
+                let is_dir = facts_lower.contains("type=dir");
+                let sz = facts
+                    .split(';')
+                    .find_map(|kv| {
+                        let (k, v) = kv.split_once('=')?;
+                        if k.eq_ignore_ascii_case("size") {
+                            v.parse::<u64>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                out.push((name, is_dir, sz));
+            }
+        }
+        return Ok(out);
+    }
+
+    let list_lines = ftp
+        .list(Some("-a"))
+        .or_else(|_| ftp.list(None))
+        .map_err(|e| format!("Lettura cartella FTP '{}' fallita: {}", dir_path, e))?;
+
+    for raw in list_lines {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.to_lowercase().starts_with("total ") {
+            continue;
+        }
+        if let Ok(f) = suppaftp::list::File::try_from(trimmed) {
+            let name = f.name().to_string();
+            if name == "." || name == ".." || name.is_empty() || f.is_symlink() {
+                continue;
+            }
+            out.push((name, f.is_directory(), f.size() as u64));
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.is_empty() || trimmed.starts_with('l') {
+            continue;
+        }
+        let is_dir = trimmed.starts_with('d') || trimmed.contains("<DIR>");
+        let fname = if parts.len() >= 9 && (trimmed.starts_with('-') || trimmed.starts_with('d')) {
+            parts[8..].join(" ")
+        } else if parts.len() >= 4 && trimmed.contains("<DIR>") {
+            parts[3..].join(" ")
+        } else {
+            parts.last().unwrap_or(&"").to_string()
+        };
+        if fname == "." || fname == ".." || fname.is_empty() {
+            continue;
+        }
+        let sz = if parts.len() >= 5 && !is_dir {
+            parts[4].parse::<u64>().unwrap_or(0)
+        } else {
+            0
+        };
+        out.push((fname, is_dir, sz));
+    }
+
+    Ok(out)
+}
+
+pub fn duplicate_ftp_items_with_progress<F>(
+    site: &SiteConfig,
+    items: &[(String, Option<String>)],
+    on_progress: &mut F,
+) -> Result<Vec<String>, String>
+where
+    F: FnMut(&str, u64, u64, usize, usize, bool),
+{
+    let mut ftp = create_ftp_session(site)?;
+    let base_pwd = ftp.pwd().unwrap_or_else(|_| "/".to_string());
+
+    let mut dirs_to_create: Vec<String> = Vec::new();
+    // (src_file_path, dst_file_path, display_name, est_size)
+    let mut files_to_copy: Vec<(String, String, String, u64)> = Vec::new();
+    let mut created_names: Vec<String> = Vec::new();
+    let mut parent_meta_cache: HashMap<String, Vec<(String, bool, u64)>> = HashMap::new();
+    let mut parent_existing_cache: HashMap<String, HashSet<String>> = HashMap::new();
+
+    fn collect_ftp_tree(
+        ftp: &mut NativeTlsFtpStream,
+        base_pwd: &str,
+        src_dir: &str,
+        dst_dir: &str,
+        depth: usize,
+        dirs_out: &mut Vec<String>,
+        files_out: &mut Vec<(String, String, String, u64)>,
+    ) -> Result<(), String> {
+        if depth > 14 {
+            return Err("Profondità massima cartelle FTP superata (14 livelli)".to_string());
+        }
+        dirs_out.push(dst_dir.to_string());
+        let children = ftp_list_dir_meta(ftp, base_pwd, src_dir)?;
+        let mut subdirs = Vec::new();
+        for (fname, is_dir, sz) in children {
+            let child_src = join_remote_path(src_dir, &fname);
+            let child_dst = join_remote_path(dst_dir, &fname);
+            if is_dir {
+                subdirs.push((child_src, child_dst));
+            } else {
+                files_out.push((child_src, child_dst, fname, sz));
+            }
+        }
+        for (c_src, c_dst) in subdirs {
+            collect_ftp_tree(ftp, base_pwd, &c_src, &c_dst, depth + 1, dirs_out, files_out)?;
+        }
+        Ok(())
+    }
+
+    for (src_raw, explicit_name) in items {
+        let (parent_dir, src_name) = split_remote_parent_and_name(src_raw)?;
+
+        if !parent_meta_cache.contains_key(&parent_dir) {
+            let meta_list = ftp_list_dir_meta(&mut ftp, &base_pwd, &parent_dir)?;
+            let existing: HashSet<String> =
+                meta_list.iter().map(|(n, _, _)| n.to_lowercase()).collect();
+            parent_existing_cache.insert(parent_dir.clone(), existing);
+            parent_meta_cache.insert(parent_dir.clone(), meta_list);
+        }
+
+        let meta_list = parent_meta_cache.get(&parent_dir).unwrap();
+        let (is_dir, est_size) = if let Some((_, d, s)) = meta_list.iter().find(|(n, _, _)| n == &src_name) {
+            (*d, *s)
+        } else {
+            // Fallback probe if item was hidden and LIST didn't return it
+            let probe_dir = ftp_cd_abs(&mut ftp, &base_pwd, src_raw).is_ok();
+            let sz = if probe_dir {
+                0
+            } else {
+                let _ = ftp_cd_abs(&mut ftp, &base_pwd, &parent_dir);
+                ftp.size(&src_name).unwrap_or(0) as u64
+            };
+            (probe_dir, sz)
+        };
+
+        let existing_lower = parent_existing_cache.get_mut(&parent_dir).unwrap();
+
+        let target_name = match explicit_name {
+            Some(raw_custom) if !raw_custom.trim().is_empty() => {
+                let clean = raw_custom.trim().trim_matches('/').to_string();
+                if clean.contains('/') {
+                    let _ = ftp.quit();
+                    return Err("Il nome del duplicato non può contenere '/'".to_string());
+                }
+                if existing_lower.contains(&clean.to_lowercase()) {
+                    let _ = ftp.quit();
+                    return Err(format!(
+                        "Esiste già un elemento chiamato '{}' nella cartella FTP",
+                        clean
+                    ));
+                }
+                existing_lower.insert(clean.to_lowercase());
+                clean
+            }
+            _ => {
+                let generated = make_unique_duplicate_name(&src_name, is_dir, existing_lower);
+                existing_lower.insert(generated.to_lowercase());
+                generated
+            }
+        };
+
+        let dst_path = join_remote_path(&parent_dir, &target_name);
+        created_names.push(target_name.clone());
+
+        if is_dir {
+            if let Err(e) = collect_ftp_tree(
+                &mut ftp,
+                &base_pwd,
+                src_raw,
+                &dst_path,
+                0,
+                &mut dirs_to_create,
+                &mut files_to_copy,
+            ) {
+                let _ = ftp.quit();
+                return Err(e);
+            }
+        } else {
+            files_to_copy.push((src_raw.clone(), dst_path, target_name, est_size));
+        }
+    }
+
+    let total_files = files_to_copy.len().max(created_names.len().max(1));
+    // Count each byte across download + upload so progress moves smoothly at 50% (download) and 100% (upload)
+    let total_bytes: u64 = files_to_copy.iter().map(|f| f.3).sum();
+    let mut bytes_done = 0u64;
+    let mut files_done = 0usize;
+
+    let initial_label = files_to_copy
+        .first()
+        .map(|f| f.2.clone())
+        .or_else(|| created_names.first().cloned())
+        .unwrap_or_else(|| "ftp".to_string());
+    on_progress(&initial_label, 0, total_bytes, 0, total_files, true);
+
+    for d in &dirs_to_create {
+        if let Err(e) = ftp_mkdir_abs(&mut ftp, &base_pwd, d) {
+            let _ = ftp.quit();
+            return Err(e);
+        }
+    }
+
+    for (src_f, dst_f, display_name, est_sz) in &files_to_copy {
+        on_progress(
+            display_name,
+            bytes_done,
+            total_bytes,
+            files_done,
+            total_files,
+            true,
+        );
+
+        let (src_parent, src_fname) = match split_remote_parent_and_name(src_f) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = ftp.quit();
+                return Err(e);
+            }
+        };
+        if let Err(e) = ftp_cd_abs(&mut ftp, &base_pwd, &src_parent) {
+            let _ = ftp.quit();
+            return Err(e);
+        }
+        let cursor = match ftp.retr_as_buffer(&src_fname) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = ftp.quit();
+                return Err(format!("Download FTP fallito per '{}': {}", src_f, e));
+            }
+        };
+        let data = cursor.into_inner();
+        let file_bytes = if *est_sz > 0 { *est_sz } else { data.len() as u64 };
+        let half = file_bytes / 2;
+        on_progress(
+            display_name,
+            bytes_done.saturating_add(half),
+            total_bytes.max(bytes_done.saturating_add(file_bytes)),
+            files_done,
+            total_files,
+            true,
+        );
+
+        let (dst_parent, dst_fname) = match split_remote_parent_and_name(dst_f) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = ftp.quit();
+                return Err(e);
+            }
+        };
+        if let Err(e) = ftp_cd_abs(&mut ftp, &base_pwd, &dst_parent) {
+            let _ = ftp.quit();
+            return Err(e);
+        }
+        let mut upload_cursor = Cursor::new(&data);
+        if let Err(e) = ftp.put_file(&dst_fname, &mut upload_cursor) {
+            let _ = ftp.quit();
+            return Err(format!("Upload FTP fallito per '{}': {}", dst_f, e));
+        }
+
+        bytes_done = bytes_done.saturating_add(file_bytes);
+        files_done += 1;
+        on_progress(
+            display_name,
+            bytes_done,
+            total_bytes.max(bytes_done),
+            files_done,
+            total_files,
+            true,
+        );
+    }
+
+    let _ = ftp.quit();
+    Ok(created_names)
 }
 
 #[cfg(test)]

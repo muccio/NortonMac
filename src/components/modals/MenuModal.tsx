@@ -5,6 +5,7 @@ interface MenuModalProps {
   volumes: VolumeInfo[];
   homeDir: string;
   onNavigate: (path: string) => void;
+  onDuplicate: () => void;
   onPackArchive: () => void;
   onSelectAll: () => void;
   onInvertSelect: () => void;
@@ -18,6 +19,7 @@ export const MenuModal: React.FC<MenuModalProps> = ({
   volumes,
   homeDir,
   onNavigate,
+  onDuplicate,
   onPackArchive,
   onSelectAll,
   onInvertSelect,
@@ -87,6 +89,16 @@ export const MenuModal: React.FC<MenuModalProps> = ({
             <div className="space-y-1">
               <button
                 onClick={() => {
+                  onClose();
+                  onDuplicate();
+                }}
+                className="w-full text-left hover:bg-nc-cyan hover:text-nc-black px-1.5 py-1 text-nc-yellow block font-bold"
+              >
+                📋 Duplicate File / Folder (Cmd+D)
+              </button>
+
+              <button
+                onClick={() => {
                   onPackArchive();
                   onClose();
                 }}
@@ -124,7 +136,7 @@ export const MenuModal: React.FC<MenuModalProps> = ({
                 }}
                 className="w-full text-left hover:bg-nc-cyan hover:text-nc-black px-1.5 py-0.5 text-nc-white block"
               >
-                Select All Files
+                Select All Files (Numpad *)
               </button>
               <button
                 onClick={() => {

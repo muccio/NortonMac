@@ -77,4 +77,22 @@ export interface DiscoveredSite {
   site: SiteConfig;
 }
 
+export interface TransferProgress {
+  operation: 'copy' | 'move' | 'duplicate' | string;
+  current_file: string;
+  files_done: number;
+  total_files: number;
+  bytes_done: number;
+  total_bytes: number;
+  percent: number;
+}
+
+export type SortField = 'name' | 'ext' | 'size' | 'modified' | 'permissions';
+export type SortDirection = 'asc' | 'desc';
+
+export interface SortConfig {
+  field: SortField;
+  direction: SortDirection;
+}
+
 export type ActivePane = 'left' | 'right';

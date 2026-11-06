@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { api } from './api';
-import { DirectoryListing, FileEntry, VolumeInfo } from './types';
+import { DirectoryListing, FileEntry, SortConfig, SortField, VolumeInfo } from './types';
 import {
   ThemeColors,
   applyThemeToDocument,
@@ -21,6 +22,7 @@ import { DeleteModal } from './components/modals/DeleteModal';
 import { SiteManagerModal } from './components/modals/SiteManagerModal';
 import { ArchiveModal } from './components/modals/ArchiveModal';
 import { ThemeModal } from './components/modals/ThemeModal';
+import { DuplicateModal } from './components/modals/DuplicateModal';
 
 interface PendingFocus {
   targetPath?: string;
@@ -57,6 +59,125 @@ function getExitedChildInfo(fromPath: string): { targetPath: string; targetName:
   };
 }
 
+function resolveQuickJump(
+  entries: FileEntry[],
+  rawQuery: string,
+  currentIndex: number
+): { matchIndex: number; effectiveQuery: string } {
+  const q = rawQuery.toLowerCase();
+  if (!q || entries.length === 0) {
+    return { matchIndex: -1, effectiveQuery: rawQuery };
+  }
+
+  // 1. Direct case-insensitive prefix match (skipping '..')
+  const exactIdx = entries.findIndex(
+    (en) => en.name !== '..' && en.name.toLowerCase().startsWith(q)
+  );
+  if (exactIdx >= 0) {
+    return { matchIndex: exactIdx, effectiveQuery: rawQuery };
+  }
+
+  // 2. Repeated single letter (e.g. pressing 'd', 'd', 'd') cycles through items starting with 'd'
+  if (q.length >= 2 && q.split('').every((ch) => ch === q[0])) {
+    const firstChar = q[0];
+    const candidates: number[] = [];
+    entries.forEach((en, idx) => {
+      if (en.name !== '..' && en.name.toLowerCase().startsWith(firstChar)) {
+        candidates.push(idx);
+      }
+    });
+    if (candidates.length > 0) {
+      const nextAfterCurrent = candidates.find((idx) => idx > currentIndex);
+      const chosen = nextAfterCurrent !== undefined ? nextAfterCurrent : candidates[0];
+      return { matchIndex: chosen, effectiveQuery: rawQuery[0] };
+    }
+  }
+
+  // 3. Fallback for visible dotfiles (e.g. typing 'git' matches '.gitignore')
+  const dotIdx = entries.findIndex(
+    (en) =>
+      en.name !== '..' &&
+      en.name.startsWith('.') &&
+      en.name.slice(1).toLowerCase().startsWith(q)
+  );
+  if (dotIdx >= 0) {
+    return { matchIndex: dotIdx, effectiveQuery: rawQuery };
+  }
+
+  return { matchIndex: -1, effectiveQuery: rawQuery };
+}
+
+function sortDirectoryEntries(
+  entries: FileEntry[],
+  sort: SortConfig,
+  calculatedSizes: Record<string, number>
+): FileEntry[] {
+  if (entries.length <= 1) return entries;
+  const dirMul = sort.direction === 'asc' ? 1 : -1;
+
+  return [...entries].sort((a, b) => {
+    // 1. Always keep '..' pinned at the top
+    if (a.name === '..') return -1;
+    if (b.name === '..') return 1;
+
+    // 2. Keep directories grouped above files (classic Norton Commander layout)
+    if (a.is_dir !== b.is_dir) {
+      return a.is_dir ? -1 : 1;
+    }
+
+    let cmp = 0;
+    switch (sort.field) {
+      case 'size': {
+        const sizeA = a.is_dir
+          ? calculatedSizes[a.path] !== undefined
+            ? calculatedSizes[a.path]
+            : -1
+          : a.size;
+        const sizeB = b.is_dir
+          ? calculatedSizes[b.path] !== undefined
+            ? calculatedSizes[b.path]
+            : -1
+          : b.size;
+        if (sizeA !== sizeB) {
+          cmp = sizeA < sizeB ? -1 : 1;
+        }
+        break;
+      }
+      case 'modified': {
+        const modA = a.modified && a.modified !== '-' ? a.modified : '';
+        const modB = b.modified && b.modified !== '-' ? b.modified : '';
+        if (modA !== modB) {
+          cmp = modA < modB ? -1 : 1;
+        }
+        break;
+      }
+      case 'ext': {
+        const extA = (a.extension || '').toLowerCase();
+        const extB = (b.extension || '').toLowerCase();
+        cmp = extA.localeCompare(extB, undefined, { numeric: true, sensitivity: 'base' });
+        break;
+      }
+      case 'permissions': {
+        const permA = a.permissions || '';
+        const permB = b.permissions || '';
+        cmp = permA.localeCompare(permB);
+        break;
+      }
+      case 'name':
+      default: {
+        cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        break;
+      }
+    }
+
+    if (cmp !== 0) {
+      return cmp * dirMul;
+    }
+
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  });
+}
+
 export const App: React.FC = () => {
   const [activePane, setActivePane] = useState<'left' | 'right'>('left');
   const [volumes, setVolumes] = useState<VolumeInfo[]>([]);
@@ -72,6 +193,7 @@ export const App: React.FC = () => {
   const [leftIndex, setLeftIndex] = useState<number>(0);
   const [leftSelected, setLeftSelected] = useState<Set<string>>(new Set());
   const [leftShowHidden, setLeftShowHidden] = useState<boolean>(false);
+  const [leftSort, setLeftSort] = useState<SortConfig>({ field: 'name', direction: 'asc' });
 
   // Right Panel State
   const [rightPath, setRightPath] = useState<string>('');
@@ -79,10 +201,44 @@ export const App: React.FC = () => {
   const [rightIndex, setRightIndex] = useState<number>(0);
   const [rightSelected, setRightSelected] = useState<Set<string>>(new Set());
   const [rightShowHidden, setRightShowHidden] = useState<boolean>(false);
+  const [rightSort, setRightSort] = useState<SortConfig>({ field: 'name', direction: 'asc' });
 
   // Calculated directory/item sizes (triggered by Spacebar / Selection)
   const [calculatedSizes, setCalculatedSizes] = useState<Record<string, number>>({});
   const [calculatingPaths, setCalculatingPaths] = useState<Set<string>>(new Set());
+
+  // Refs for keeping focus index aligned with active sort during async refreshes
+  const leftSortRef = useRef<SortConfig>(leftSort);
+  leftSortRef.current = leftSort;
+  const rightSortRef = useRef<SortConfig>(rightSort);
+  rightSortRef.current = rightSort;
+  const calculatedSizesRef = useRef<Record<string, number>>(calculatedSizes);
+  calculatedSizesRef.current = calculatedSizes;
+
+  // Type-ahead Quick Jump state
+  const [quickSearch, setQuickSearch] = useState<{ query: string; matched: boolean }>({
+    query: '',
+    matched: true,
+  });
+  const quickSearchTimerRef = useRef<number | null>(null);
+
+  const clearQuickSearch = useCallback(() => {
+    if (quickSearchTimerRef.current !== null) {
+      window.clearTimeout(quickSearchTimerRef.current);
+      quickSearchTimerRef.current = null;
+    }
+    setQuickSearch((prev) => (prev.query ? { query: '', matched: true } : prev));
+  }, []);
+
+  const scheduleQuickSearchReset = useCallback(() => {
+    if (quickSearchTimerRef.current !== null) {
+      window.clearTimeout(quickSearchTimerRef.current);
+    }
+    quickSearchTimerRef.current = window.setTimeout(() => {
+      quickSearchTimerRef.current = null;
+      setQuickSearch({ query: '', matched: true });
+    }, 1500);
+  }, []);
 
   // Pending cursor target when navigating up/down directories
   const pendingFocusRef = useRef<{ left: PendingFocus | null; right: PendingFocus | null }>({
@@ -135,6 +291,15 @@ export const App: React.FC = () => {
     sourceNames: [],
     currentDir: '',
   });
+  const [duplicateState, setDuplicateState] = useState<{
+    open: boolean;
+    items: FileEntry[];
+    currentDir: string;
+  }>({
+    open: false,
+    items: [],
+    currentDir: '',
+  });
 
   const [errorAlert, setErrorAlert] = useState<{ open: boolean; title: string; message: string }>({
     open: false,
@@ -146,6 +311,15 @@ export const App: React.FC = () => {
   useEffect(() => {
     applyThemeToDocument(themeColors);
   }, [themeColors]);
+
+  const refreshVolumes = useCallback(async () => {
+    try {
+      const vols = await api.getVolumes();
+      setVolumes(vols);
+    } catch (e) {
+      console.warn('Failed to refresh volumes:', e);
+    }
+  }, []);
 
   // Initial load
   useEffect(() => {
@@ -164,6 +338,54 @@ export const App: React.FC = () => {
     };
     init();
   }, []);
+
+  // Real-time external disk mount/unmount subscription + window focus sync
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
+
+    listen<VolumeInfo[]>('volumes-changed', (event) => {
+      setVolumes(event.payload);
+    })
+      .then((unlisten) => {
+        unlistenFn = unlisten;
+      })
+      .catch((err) => {
+        console.warn('Volume event listener fallback:', err);
+      });
+
+    const onFocus = () => {
+      refreshVolumes();
+    };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      if (unlistenFn) unlistenFn();
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [refreshVolumes]);
+
+  // Handle unplugged external drives gracefully if a panel was inside /Volumes/<Drive>
+  useEffect(() => {
+    if (!homeDir || volumes.length === 0) return;
+
+    const isStillMounted = (p: string) => {
+      if (!p.startsWith('/Volumes/') || p === '/Volumes') return true;
+      return volumes.some(
+        (v) => v.mount_point !== '/' && (p === v.mount_point || p.startsWith(`${v.mount_point}/`))
+      );
+    };
+
+    if (leftPath && !isStillMounted(leftPath)) {
+      pendingFocusRef.current.left = { resetToTop: true };
+      setLeftSelected(new Set());
+      setLeftPath(homeDir);
+    }
+    if (rightPath && !isStillMounted(rightPath)) {
+      pendingFocusRef.current.right = { resetToTop: true };
+      setRightSelected(new Set());
+      setRightPath(homeDir);
+    }
+  }, [volumes, leftPath, rightPath, homeDir]);
 
   // Trigger async recursive size calculation on item/directory
   const triggerSizeCalculation = useCallback((entry: FileEntry) => {
@@ -207,8 +429,14 @@ export const App: React.FC = () => {
 
       setLeftListing(listing);
 
+      const sortedEntries = sortDirectoryEntries(
+        listing.entries,
+        leftSortRef.current,
+        calculatedSizesRef.current
+      );
+
       if (pending?.targetPath || pending?.targetName) {
-        const matchIdx = listing.entries.findIndex(
+        const matchIdx = sortedEntries.findIndex(
           (e) =>
             (pending.targetPath && e.path === pending.targetPath) ||
             (pending.targetName && e.name === pending.targetName)
@@ -217,7 +445,7 @@ export const App: React.FC = () => {
       } else if (pending?.resetToTop) {
         setLeftIndex(0);
       } else {
-        setLeftIndex((prev) => Math.min(prev, Math.max(0, listing.entries.length - 1)));
+        setLeftIndex((prev) => Math.min(prev, Math.max(0, sortedEntries.length - 1)));
       }
     } catch (err: any) {
       pendingFocusRef.current.left = null;
@@ -231,7 +459,8 @@ export const App: React.FC = () => {
       if (
         targetPath.startsWith('ftp://') ||
         targetPath.startsWith('ftps://') ||
-        targetPath.startsWith('sftp://')
+        targetPath.startsWith('sftp://') ||
+        targetPath.startsWith('/Volumes/')
       ) {
         setLeftPath(homeDir);
       }
@@ -249,8 +478,14 @@ export const App: React.FC = () => {
 
       setRightListing(listing);
 
+      const sortedEntries = sortDirectoryEntries(
+        listing.entries,
+        rightSortRef.current,
+        calculatedSizesRef.current
+      );
+
       if (pending?.targetPath || pending?.targetName) {
-        const matchIdx = listing.entries.findIndex(
+        const matchIdx = sortedEntries.findIndex(
           (e) =>
             (pending.targetPath && e.path === pending.targetPath) ||
             (pending.targetName && e.name === pending.targetName)
@@ -259,7 +494,7 @@ export const App: React.FC = () => {
       } else if (pending?.resetToTop) {
         setRightIndex(0);
       } else {
-        setRightIndex((prev) => Math.min(prev, Math.max(0, listing.entries.length - 1)));
+        setRightIndex((prev) => Math.min(prev, Math.max(0, sortedEntries.length - 1)));
       }
     } catch (err: any) {
       pendingFocusRef.current.right = null;
@@ -273,12 +508,19 @@ export const App: React.FC = () => {
       if (
         targetPath.startsWith('ftp://') ||
         targetPath.startsWith('ftps://') ||
-        targetPath.startsWith('sftp://')
+        targetPath.startsWith('sftp://') ||
+        targetPath.startsWith('/Volumes/')
       ) {
         setRightPath(homeDir);
       }
     }
   }, [rightPath, rightShowHidden, homeDir]);
+
+  // If a panel is currently viewing /Volumes directly, refresh it when disks change
+  useEffect(() => {
+    if (leftPath === '/Volumes') refreshLeft('/Volumes');
+    if (rightPath === '/Volumes') refreshRight('/Volumes');
+  }, [volumes]);
 
   useEffect(() => {
     if (leftPath) refreshLeft(leftPath);
@@ -288,7 +530,95 @@ export const App: React.FC = () => {
     if (rightPath) refreshRight(rightPath);
   }, [rightPath, rightShowHidden, refreshRight]);
 
-  const activeListing = activePane === 'left' ? leftListing : rightListing;
+  // Reset quick-jump buffer when changing panel or directory, and cleanup timer on unmount
+  useEffect(() => {
+    clearQuickSearch();
+  }, [activePane, leftPath, rightPath, clearQuickSearch]);
+
+  useEffect(() => {
+    return () => {
+      if (quickSearchTimerRef.current !== null) {
+        window.clearTimeout(quickSearchTimerRef.current);
+      }
+    };
+  }, []);
+
+  const leftViewListing = useMemo<DirectoryListing | null>(() => {
+    if (!leftListing) return null;
+    return {
+      ...leftListing,
+      entries: sortDirectoryEntries(leftListing.entries, leftSort, calculatedSizes),
+    };
+  }, [leftListing, leftSort, calculatedSizes]);
+
+  const rightViewListing = useMemo<DirectoryListing | null>(() => {
+    if (!rightListing) return null;
+    return {
+      ...rightListing,
+      entries: sortDirectoryEntries(rightListing.entries, rightSort, calculatedSizes),
+    };
+  }, [rightListing, rightSort, calculatedSizes]);
+
+  const handleSortChange = useCallback(
+    (pane: 'left' | 'right', field: SortField) => {
+      clearQuickSearch();
+      const isLeft = pane === 'left';
+      const prevSort = isLeft ? leftSort : rightSort;
+      const viewListing = isLeft ? leftViewListing : rightViewListing;
+      const rawListing = isLeft ? leftListing : rightListing;
+      const curIdx = isLeft ? leftIndex : rightIndex;
+      const focusedEntry = viewListing?.entries[curIdx];
+
+      const nextDirection =
+        prevSort.field === field
+          ? prevSort.direction === 'asc'
+            ? 'desc'
+            : 'asc'
+          : field === 'size' || field === 'modified'
+          ? 'desc'
+          : 'asc';
+
+      const nextSort: SortConfig = { field, direction: nextDirection };
+
+      if (isLeft) {
+        setLeftSort(nextSort);
+        if (rawListing && focusedEntry) {
+          if (focusedEntry.name === '..') {
+            setLeftIndex(0);
+          } else {
+            const reordered = sortDirectoryEntries(rawListing.entries, nextSort, calculatedSizes);
+            const newIdx = reordered.findIndex((e) => e.path === focusedEntry.path);
+            if (newIdx >= 0) setLeftIndex(newIdx);
+          }
+        }
+      } else {
+        setRightSort(nextSort);
+        if (rawListing && focusedEntry) {
+          if (focusedEntry.name === '..') {
+            setRightIndex(0);
+          } else {
+            const reordered = sortDirectoryEntries(rawListing.entries, nextSort, calculatedSizes);
+            const newIdx = reordered.findIndex((e) => e.path === focusedEntry.path);
+            if (newIdx >= 0) setRightIndex(newIdx);
+          }
+        }
+      }
+    },
+    [
+      clearQuickSearch,
+      leftSort,
+      rightSort,
+      leftViewListing,
+      rightViewListing,
+      leftListing,
+      rightListing,
+      leftIndex,
+      rightIndex,
+      calculatedSizes,
+    ]
+  );
+
+  const activeListing = activePane === 'left' ? leftViewListing : rightViewListing;
   const activeIndex = activePane === 'left' ? leftIndex : rightIndex;
   const activeSelected = activePane === 'left' ? leftSelected : rightSelected;
   const currentItem = activeListing?.entries[activeIndex];
@@ -310,12 +640,12 @@ export const App: React.FC = () => {
 
     if (isLeft) {
       setLeftSelected(currentSet);
-      if (advanceCursor && leftListing && leftIndex < leftListing.entries.length - 1) {
+      if (advanceCursor && leftViewListing && leftIndex < leftViewListing.entries.length - 1) {
         setLeftIndex(leftIndex + 1);
       }
     } else {
       setRightSelected(currentSet);
-      if (advanceCursor && rightListing && rightIndex < rightListing.entries.length - 1) {
+      if (advanceCursor && rightViewListing && rightIndex < rightViewListing.entries.length - 1) {
         setRightIndex(rightIndex + 1);
       }
     }
@@ -378,7 +708,10 @@ export const App: React.FC = () => {
   const handleF1Help = () => setHelpOpen(true);
 
   // F2 Menu
-  const handleF2Menu = () => setMenuOpen(true);
+  const handleF2Menu = () => {
+    refreshVolumes();
+    setMenuOpen(true);
+  };
 
   // F3 View
   const handleF3View = async () => {
@@ -498,6 +831,38 @@ export const App: React.FC = () => {
     });
   };
 
+  // Duplicate File / Folder Modal (Local or FTP/FTPS/SFTP)
+  const handleOpenDuplicate = () => {
+    if (!activeListing) return;
+    const curPath = activeListing.display_path || (activePane === 'left' ? leftPath : rightPath);
+    if ((activePane === 'left' ? leftPath : rightPath).startsWith('archive://')) {
+      setErrorAlert({
+        open: true,
+        title: 'ARCHIVE READ-ONLY',
+        message: 'Gli archivi virtuali sono in sola lettura.\nEstrai prima i file con F5 per poterli duplicare.',
+      });
+      return;
+    }
+
+    const markedEntries = activeListing.entries.filter(
+      (e) => activeSelected.has(e.path) && e.name !== '..'
+    );
+    const itemsToDup =
+      markedEntries.length > 0
+        ? markedEntries
+        : currentItem && currentItem.name !== '..'
+        ? [currentItem]
+        : [];
+
+    if (itemsToDup.length === 0) return;
+
+    setDuplicateState({
+      open: true,
+      items: itemsToDup,
+      currentDir: curPath,
+    });
+  };
+
   // Selection actions
   const handleSelectAll = () => {
     if (!activeListing) return;
@@ -527,6 +892,20 @@ export const App: React.FC = () => {
     else setRightSelected(new Set());
   };
 
+  // Numpad '*' selects all items in the active panel (or clears if all are already selected)
+  const handleNumpadSelectAll = () => {
+    if (!activeListing) return;
+    const validEntries = activeListing.entries.filter((e) => e.name !== '..');
+    if (validEntries.length === 0) return;
+    const currentSet = activePane === 'left' ? leftSelected : rightSelected;
+    const allAlreadySelected = validEntries.every((e) => currentSet.has(e.path));
+    if (allAlreadySelected) {
+      handleClearSelect();
+    } else {
+      handleSelectAll();
+    }
+  };
+
   // Toggle Hidden
   const handleToggleHidden = () => {
     if (activePane === 'left') setLeftShowHidden(!leftShowHidden);
@@ -545,6 +924,7 @@ export const App: React.FC = () => {
       mkdirOpen ||
       deleteState.open ||
       copyMoveState.open ||
+      duplicateState.open ||
       archiveState.open ||
       errorAlert.open;
 
@@ -566,8 +946,13 @@ export const App: React.FC = () => {
         return;
       }
 
-      // Allow ESC to close modals even in inputs
+      // Allow ESC to close modals even in inputs, or clear quick-jump buffer
       if (e.key === 'Escape') {
+        if (!anyModalOpen && quickSearch.query) {
+          e.preventDefault();
+          clearQuickSearch();
+          return;
+        }
         if (themeOpen) {
           applyThemeToDocument(themeColors);
           setThemeOpen(false);
@@ -580,6 +965,7 @@ export const App: React.FC = () => {
         if (mkdirOpen) setMkdirOpen(false);
         if (deleteState.open) setDeleteState({ open: false, paths: [], names: [] });
         if (copyMoveState.open) setCopyMoveState((prev) => ({ ...prev, open: false }));
+        if (duplicateState.open) setDuplicateState((prev) => ({ ...prev, open: false }));
         if (archiveState.open) setArchiveState((prev) => ({ ...prev, open: false }));
         return;
       }
@@ -594,9 +980,40 @@ export const App: React.FC = () => {
       // Don't hijack panel navigation keys when a modal is open or an input is focused
       if (isInput || anyModalOpen) return;
 
+      // Cmd + D (or Ctrl + D or Shift + F5) -> Duplicate selected file/folder (Local or FTP/SFTP)
+      if (
+        ((e.metaKey || e.ctrlKey) && (e.key === 'd' || e.key === 'D')) ||
+        (e.shiftKey && e.key === 'F5')
+      ) {
+        e.preventDefault();
+        clearQuickSearch();
+        handleOpenDuplicate();
+        return;
+      }
+
+      // Numpad '*' (or '*') -> Select all files/items in active panel
+      if (
+        e.code === 'NumpadMultiply' ||
+        (e.key === '*' && !e.metaKey && !e.ctrlKey && !e.altKey)
+      ) {
+        e.preventDefault();
+        clearQuickSearch();
+        handleNumpadSelectAll();
+        return;
+      }
+
+      // Cmd + A -> Select all files/items in active panel
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault();
+        clearQuickSearch();
+        handleSelectAll();
+        return;
+      }
+
       // Tab switches active panel
       if (e.key === 'Tab') {
         e.preventDefault();
+        clearQuickSearch();
         setActivePane((prev) => (prev === 'left' ? 'right' : 'left'));
         return;
       }
@@ -604,6 +1021,7 @@ export const App: React.FC = () => {
       // Arrow navigation
       if (e.key === 'ArrowUp') {
         e.preventDefault();
+        clearQuickSearch();
         if (activePane === 'left') {
           setLeftIndex((prev) => Math.max(0, prev - 1));
         } else {
@@ -614,6 +1032,7 @@ export const App: React.FC = () => {
 
       if (e.key === 'ArrowDown') {
         e.preventDefault();
+        clearQuickSearch();
         const maxIdx = (activeListing?.entries.length || 1) - 1;
         if (activePane === 'left') {
           setLeftIndex((prev) => Math.min(maxIdx, prev + 1));
@@ -625,6 +1044,7 @@ export const App: React.FC = () => {
 
       if (e.key === 'PageUp') {
         e.preventDefault();
+        clearQuickSearch();
         if (activePane === 'left') {
           setLeftIndex((prev) => Math.max(0, prev - 10));
         } else {
@@ -635,6 +1055,7 @@ export const App: React.FC = () => {
 
       if (e.key === 'PageDown') {
         e.preventDefault();
+        clearQuickSearch();
         const maxIdx = (activeListing?.entries.length || 1) - 1;
         if (activePane === 'left') {
           setLeftIndex((prev) => Math.min(maxIdx, prev + 10));
@@ -646,6 +1067,7 @@ export const App: React.FC = () => {
 
       if (e.key === 'Home') {
         e.preventDefault();
+        clearQuickSearch();
         if (activePane === 'left') setLeftIndex(0);
         else setRightIndex(0);
         return;
@@ -653,6 +1075,7 @@ export const App: React.FC = () => {
 
       if (e.key === 'End') {
         e.preventDefault();
+        clearQuickSearch();
         const maxIdx = (activeListing?.entries.length || 1) - 1;
         if (activePane === 'left') setLeftIndex(maxIdx);
         else setRightIndex(maxIdx);
@@ -660,8 +1083,22 @@ export const App: React.FC = () => {
       }
 
       // Mark file/dir with Space or Insert -> also calculates directory/item size!
+      // (If actively typing a quick-jump prefix and an item continues with a space, extend the search instead)
       if (e.key === ' ' || e.key === 'Insert') {
         e.preventDefault();
+        if (e.key === ' ' && quickSearch.query.length > 0) {
+          const entries = activeListing?.entries || [];
+          const candidateWithSpace = quickSearch.query + ' ';
+          const { matchIndex } = resolveQuickJump(entries, candidateWithSpace, activeIndex);
+          if (matchIndex >= 0) {
+            setQuickSearch({ query: candidateWithSpace, matched: true });
+            scheduleQuickSearchReset();
+            if (activePane === 'left') setLeftIndex(matchIndex);
+            else setRightIndex(matchIndex);
+            return;
+          }
+          clearQuickSearch();
+        }
         if (currentItem) {
           if (currentItem.name !== '..') {
             handleToggleMark(currentItem, true);
@@ -678,15 +1115,32 @@ export const App: React.FC = () => {
       // Enter
       if (e.key === 'Enter') {
         e.preventDefault();
+        clearQuickSearch();
         if (currentItem) {
           handleEnter(currentItem);
         }
         return;
       }
 
-      // Backspace: go up to parent and position cursor on the directory we exited from!
+      // Backspace: edit quick-jump query if active, otherwise go up to parent ('..')
       if (e.key === 'Backspace') {
         e.preventDefault();
+        if (quickSearch.query.length > 0) {
+          const shortened = quickSearch.query.slice(0, -1);
+          if (!shortened) {
+            clearQuickSearch();
+          } else {
+            const entries = activeListing?.entries || [];
+            const { matchIndex, effectiveQuery } = resolveQuickJump(entries, shortened, 0);
+            setQuickSearch({ query: effectiveQuery, matched: matchIndex >= 0 });
+            scheduleQuickSearchReset();
+            if (matchIndex >= 0) {
+              if (activePane === 'left') setLeftIndex(matchIndex);
+              else setRightIndex(matchIndex);
+            }
+          }
+          return;
+        }
         const parentEntry = activeListing?.entries.find((en) => en.name === '..');
         if (parentEntry) {
           handleEnter(parentEntry);
@@ -695,16 +1149,36 @@ export const App: React.FC = () => {
       }
 
       // Function keys (standard F1-F12 or macOS Fn+F1-F12)
-      if (e.key === 'F1') { e.preventDefault(); handleF1Help(); }
-      else if (e.key === 'F2') { e.preventDefault(); handleF2Menu(); }
-      else if (e.key === 'F3') { e.preventDefault(); handleF3View(); }
-      else if (e.key === 'F4') { e.preventDefault(); handleF4Edit(); }
-      else if (e.key === 'F5') { e.preventDefault(); handleF5Copy(); }
-      else if (e.key === 'F6') { e.preventDefault(); handleF6Move(); }
-      else if (e.key === 'F7') { e.preventDefault(); handleF7MkDir(); }
-      else if (e.key === 'F8') { e.preventDefault(); handleF8Delete(); }
-      else if (e.key === 'F9') { e.preventDefault(); handleF9Connect(); }
-      else if (e.key === 'F10') { e.preventDefault(); handleF10Quit(); }
+      if (e.key === 'F1') { e.preventDefault(); clearQuickSearch(); handleF1Help(); return; }
+      else if (e.key === 'F2') { e.preventDefault(); clearQuickSearch(); handleF2Menu(); return; }
+      else if (e.key === 'F3') { e.preventDefault(); clearQuickSearch(); handleF3View(); return; }
+      else if (e.key === 'F4') { e.preventDefault(); clearQuickSearch(); handleF4Edit(); return; }
+      else if (e.key === 'F5') { e.preventDefault(); clearQuickSearch(); handleF5Copy(); return; }
+      else if (e.key === 'F6') { e.preventDefault(); clearQuickSearch(); handleF6Move(); return; }
+      else if (e.key === 'F7') { e.preventDefault(); clearQuickSearch(); handleF7MkDir(); return; }
+      else if (e.key === 'F8') { e.preventDefault(); clearQuickSearch(); handleF8Delete(); return; }
+      else if (e.key === 'F9') { e.preventDefault(); clearQuickSearch(); handleF9Connect(); return; }
+      else if (e.key === 'F10') { e.preventDefault(); clearQuickSearch(); handleF10Quit(); return; }
+
+      // Type-ahead Quick Jump: printable characters jump directly to matching entry prefix
+      if (
+        e.key.length === 1 &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.key !== ' '
+      ) {
+        e.preventDefault();
+        const entries = activeListing?.entries || [];
+        const candidate = quickSearch.query + e.key;
+        const { matchIndex, effectiveQuery } = resolveQuickJump(entries, candidate, activeIndex);
+        setQuickSearch({ query: effectiveQuery, matched: matchIndex >= 0 });
+        scheduleQuickSearchReset();
+        if (matchIndex >= 0) {
+          if (activePane === 'left') setLeftIndex(matchIndex);
+          else setRightIndex(matchIndex);
+        }
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -714,6 +1188,9 @@ export const App: React.FC = () => {
     activeListing,
     activeIndex,
     currentItem,
+    quickSearch,
+    clearQuickSearch,
+    scheduleQuickSearchReset,
     helpOpen,
     menuOpen,
     siteManagerOpen,
@@ -724,6 +1201,7 @@ export const App: React.FC = () => {
     mkdirOpen,
     deleteState.open,
     copyMoveState.open,
+    duplicateState.open,
     archiveState.open,
     errorAlert.open,
     leftShowHidden,
@@ -739,11 +1217,13 @@ export const App: React.FC = () => {
       {/* Top Header Bar */}
       <HeaderBar
         volumes={volumes}
-        currentVolume={activeListing?.path || ''}
+        currentVolume={activeListing?.path || activePath}
         showHidden={activePane === 'left' ? leftShowHidden : rightShowHidden}
         onToggleHidden={handleToggleHidden}
         onOpenMenu={handleF2Menu}
         onOpenTheme={() => setThemeOpen(true)}
+        onDuplicate={handleOpenDuplicate}
+        onRefreshVolumes={refreshVolumes}
         onSelectVolume={(mount) => {
           navigatePaneTo(activePane, mount, { resetToTop: true });
         }}
@@ -754,12 +1234,18 @@ export const App: React.FC = () => {
         <FilePanel
           panelId="left"
           isActive={activePane === 'left'}
-          listing={leftListing}
+          listing={leftViewListing}
           selectedIndex={leftIndex}
           selectedPaths={leftSelected}
           calculatedSizes={calculatedSizes}
           calculatingPaths={calculatingPaths}
-          onSelectIndex={setLeftIndex}
+          sortConfig={leftSort}
+          quickSearch={activePane === 'left' ? quickSearch : null}
+          onSortChange={(field) => handleSortChange('left', field)}
+          onSelectIndex={(idx) => {
+            clearQuickSearch();
+            setLeftIndex(idx);
+          }}
           onToggleMark={handleToggleMark}
           onEnter={handleEnter}
           onActivate={() => setActivePane('left')}
@@ -769,12 +1255,18 @@ export const App: React.FC = () => {
         <FilePanel
           panelId="right"
           isActive={activePane === 'right'}
-          listing={rightListing}
+          listing={rightViewListing}
           selectedIndex={rightIndex}
           selectedPaths={rightSelected}
           calculatedSizes={calculatedSizes}
           calculatingPaths={calculatingPaths}
-          onSelectIndex={setRightIndex}
+          sortConfig={rightSort}
+          quickSearch={activePane === 'right' ? quickSearch : null}
+          onSortChange={(field) => handleSortChange('right', field)}
+          onSelectIndex={(idx) => {
+            clearQuickSearch();
+            setRightIndex(idx);
+          }}
           onToggleMark={handleToggleMark}
           onEnter={handleEnter}
           onActivate={() => setActivePane('right')}
@@ -817,6 +1309,7 @@ export const App: React.FC = () => {
           onNavigate={(p) => {
             navigatePaneTo(activePane, p, { resetToTop: true });
           }}
+          onDuplicate={handleOpenDuplicate}
           onPackArchive={handleOpenPackArchive}
           onSelectAll={handleSelectAll}
           onInvertSelect={handleInvertSelect}
@@ -869,6 +1362,7 @@ export const App: React.FC = () => {
               await api.copyItems(copyMoveState.sources, destDir, overwrite);
             } else {
               await api.moveItems(copyMoveState.sources, destDir, overwrite);
+              handleClearSelect();
             }
             refreshLeft();
             refreshRight();
@@ -908,6 +1402,28 @@ export const App: React.FC = () => {
             navigatePaneTo(activePane, mountUrl, { resetToTop: true });
           }}
           onClose={() => setSiteManagerOpen(false)}
+        />
+      )}
+
+      {duplicateState.open && (
+        <DuplicateModal
+          currentDir={duplicateState.currentDir}
+          items={duplicateState.items}
+          existingEntries={activeListing?.entries || []}
+          onConfirm={async (newName) => {
+            const createdNames = await api.duplicateItems(
+              duplicateState.items.map((i) => i.path),
+              newName
+            );
+            if (createdNames.length > 0) {
+              pendingFocusRef.current[activePane] = {
+                targetName: createdNames[createdNames.length - 1],
+              };
+            }
+            refreshLeft();
+            refreshRight();
+          }}
+          onClose={() => setDuplicateState((prev) => ({ ...prev, open: false }))}
         />
       )}
 
