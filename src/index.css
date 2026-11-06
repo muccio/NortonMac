@@ -3,6 +3,32 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --nc-blue-rgb: 0 0 170;
+    --nc-darkblue-rgb: 0 0 128;
+    --nc-cyan-rgb: 0 170 170;
+    --nc-brightcyan-rgb: 85 255 255;
+    --nc-white-rgb: 255 255 255;
+    --nc-gray-rgb: 170 170 170;
+    --nc-darkgray-rgb: 85 85 85;
+    --nc-yellow-rgb: 255 255 85;
+    --nc-black-rgb: 0 0 0;
+    --nc-red-rgb: 170 0 0;
+    --nc-brightred-rgb: 255 85 85;
+    --nc-green-rgb: 0 170 0;
+    --nc-brightgreen-rgb: 85 255 85;
+
+    --nc-cursor-bg-rgb: 0 170 170;
+    --nc-cursor-text-rgb: 0 0 0;
+    --nc-marked-text-rgb: 255 255 85;
+    --nc-cursor-marked-bg-rgb: 85 255 255;
+    --nc-cursor-marked-text-rgb: 170 0 0;
+    --nc-dir-text-rgb: 255 255 255;
+    --nc-file-text-rgb: 255 255 255;
+    --nc-archive-text-rgb: 85 255 255;
+    --nc-updir-text-rgb: 85 255 255;
+  }
+
   * {
     box-sizing: border-box;
   }

@@ -22,9 +22,10 @@ export const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
               <li><span className="text-nc-brightcyan font-bold">Tab</span> : Switch focus between Left and Right panel</li>
               <li><span className="text-nc-brightcyan font-bold">↑ / ↓</span> : Navigate file list up and down</li>
               <li><span className="text-nc-brightcyan font-bold">Enter</span> : Open directory, enter Virtual Archive (.zip/.tar.gz), or execute</li>
-              <li><span className="text-nc-brightcyan font-bold">Backspace / ..</span> : Move up to parent directory</li>
-              <li><span className="text-nc-brightcyan font-bold">Space / Insert</span> : Mark / unmark file (turns yellow for batch operations)</li>
+              <li><span className="text-nc-brightcyan font-bold">Backspace / ..</span> : Move up to parent directory (positions cursor on the exited folder)</li>
+              <li><span className="text-nc-brightcyan font-bold">Space / Insert</span> : Mark / unmark item &amp; calculate directory recursive size</li>
               <li><span className="text-nc-brightcyan font-bold">Cmd + .</span> : Toggle macOS Unix dotfiles and hidden files</li>
+              <li><span className="text-nc-brightcyan font-bold">Cmd + ,</span> : Open GUI, Cursor &amp; Selection Color Editor</li>
             </ul>
           </div>
 

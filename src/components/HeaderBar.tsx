@@ -7,6 +7,7 @@ interface HeaderBarProps {
   showHidden: boolean;
   onToggleHidden: () => void;
   onOpenMenu: () => void;
+  onOpenTheme: () => void;
   onSelectVolume: (mountPoint: string) => void;
 }
 
@@ -16,6 +17,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   showHidden,
   onToggleHidden,
   onOpenMenu,
+  onOpenTheme,
   onSelectVolume,
 }) => {
   return (
@@ -43,6 +45,13 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <span className="text-nc-red">O</span>ptions
         </button>
         <button
+          onClick={onOpenTheme}
+          className="hover:bg-nc-darkblue hover:text-nc-brightcyan px-2 py-0.5 rounded uppercase"
+          title="Color & Theme Editor (Cmd+,)"
+        >
+          <span className="text-nc-red">C</span>olors
+        </button>
+        <button
           onClick={onOpenMenu}
           className="hover:bg-nc-darkblue hover:text-nc-brightcyan px-2 py-0.5 rounded uppercase"
           title="F2 Menu"
@@ -51,7 +60,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </button>
       </div>
 
-      <div className="flex items-center space-x-3">
+      <div className="flex items-center space-x-2">
         {/* Drive selector dropdown */}
         <div className="flex items-center space-x-1">
           <span className="text-nc-blue">DISK:</span>
@@ -67,6 +76,15 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             ))}
           </select>
         </div>
+
+        {/* Color / Theme Editor shortcut */}
+        <button
+          onClick={onOpenTheme}
+          className="px-2 py-0.5 font-bold border bg-nc-darkblue text-nc-yellow border-nc-cyan hover:bg-nc-yellow hover:text-nc-black transition-colors"
+          title="Personalizza Colori GUI & Selezione (Cmd + ,)"
+        >
+          🎨 COLORS
+        </button>
 
         {/* Hidden files badge toggle */}
         <button

@@ -39,6 +39,7 @@ pub fn run() {
             commands::parse_imported_sites,
             commands::import_sites_batch,
             commands::export_sites_to_json,
+            commands::calculate_item_size,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

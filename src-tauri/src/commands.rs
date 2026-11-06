@@ -1,17 +1,18 @@
 use crate::archive_vfs::{
-    create_targz_archive, create_zip_archive, extract_archive_file_to_bytes,
-    extract_selected_from_archive, list_archive, parse_archive_url,
+    calculate_archive_subpath_size, create_targz_archive, create_zip_archive,
+    extract_archive_file_to_bytes, extract_selected_from_archive, list_archive, parse_archive_url,
 };
 use crate::local_fs::{
-    copy_recursive, get_all_volumes, list_local_directory,
+    calculate_local_item_size, copy_recursive, get_all_volumes, list_local_directory,
 };
 use crate::models::{
     DirectoryListing, FilePreview, HexLine, ShellOutput, SiteConfig, VolumeInfo,
 };
 use crate::remote_fs::{
-    create_ftp_directory, create_sftp_directory, delete_ftp_file, delete_sftp_file,
-    download_ftp_file, download_sftp_file, list_ftp_directory, list_sftp_directory,
-    parse_remote_url, upload_ftp_file, upload_sftp_file, verify_and_prepare_site, RemoteManager,
+    calculate_ftp_item_size, calculate_sftp_item_size, create_ftp_directory,
+    create_sftp_directory, delete_ftp_file, delete_sftp_file, download_ftp_file,
+    download_sftp_file, list_ftp_directory, list_sftp_directory, parse_remote_url,
+    upload_ftp_file, upload_sftp_file, verify_and_prepare_site, RemoteManager,
 };
 use crate::site_manager::{delete_site, load_sites, save_site};
 use base64::prelude::*;
@@ -674,4 +675,37 @@ pub fn import_sites_batch(sites: Vec<SiteConfig>, overwrite: bool) -> Result<usi
 #[tauri::command]
 pub fn export_sites_to_json() -> Result<String, String> {
     crate::site_manager::export_sites_json()
+}
+
+#[tauri::command]
+pub async fn calculate_item_size(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    if let Some((archive_path, subpath)) = parse_archive_url(&path) {
+        return tokio::task::spawn_blocking(move || {
+            calculate_archive_subpath_size(&archive_path, &subpath)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    if let Some((proto, site_id, remote_path)) = parse_remote_url(&path) {
+        let site = state
+            .remote_manager
+            .get_site(&site_id)
+            .ok_or_else(|| format!("Sessione remota '{}' non trovata", site_id))?;
+        return run_remote_blocking(25, move || {
+            if is_ftp_proto(&proto) {
+                calculate_ftp_item_size(&site, &remote_path)
+            } else {
+                calculate_sftp_item_size(&site, &remote_path)
+            }
+        })
+        .await;
+    }
+
+    tokio::task::spawn_blocking(move || Ok(calculate_local_item_size(Path::new(&path))))
+        .await
+        .map_err(|e| e.to_string())?
 }

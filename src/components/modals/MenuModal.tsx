@@ -10,6 +10,7 @@ interface MenuModalProps {
   onInvertSelect: () => void;
   onClearSelect: () => void;
   onOpenSiteManager: () => void;
+  onOpenTheme: () => void;
   onClose: () => void;
 }
 
@@ -22,6 +23,7 @@ export const MenuModal: React.FC<MenuModalProps> = ({
   onInvertSelect,
   onClearSelect,
   onOpenSiteManager,
+  onOpenTheme,
   onClose,
 }) => {
   const commonFolders = [
@@ -101,6 +103,16 @@ export const MenuModal: React.FC<MenuModalProps> = ({
                 className="w-full text-left hover:bg-nc-cyan hover:text-nc-black px-1.5 py-1 text-nc-white block font-bold"
               >
                 🌐 SFTP / FTP Connect (F9)
+              </button>
+
+              <button
+                onClick={() => {
+                  onOpenTheme();
+                  onClose();
+                }}
+                className="w-full text-left hover:bg-nc-cyan hover:text-nc-black px-1.5 py-1 text-nc-yellow block font-bold"
+              >
+                🎨 Color &amp; Theme Editor (Cmd+,)
               </button>
 
               <div className="border-t border-nc-cyan/30 my-2"></div>

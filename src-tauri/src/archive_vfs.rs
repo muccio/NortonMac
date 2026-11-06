@@ -488,3 +488,60 @@ pub fn create_targz_archive(sources: &[PathBuf], output_file: &Path) -> Result<(
     tar.finish().map_err(|e| e.to_string())?;
     Ok(())
 }
+
+pub fn calculate_archive_subpath_size(archive_path: &Path, subpath: &str) -> Result<u64, String> {
+    let file_name = archive_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let clean_sub = subpath.trim_matches('/');
+    let dir_prefix = if clean_sub.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", clean_sub)
+    };
+
+    let mut total: u64 = 0;
+    if file_name.ends_with(".zip") {
+        let file = File::open(archive_path).map_err(|e| e.to_string())?;
+        let mut zip = ZipArchive::new(file).map_err(|e| e.to_string())?;
+        for i in 0..zip.len() {
+            if let Ok(zf) = zip.by_index(i) {
+                if zf.is_dir() {
+                    continue;
+                }
+                let name = zf.name().trim_matches('/');
+                if clean_sub.is_empty() || name == clean_sub || name.starts_with(&dir_prefix) {
+                    total += zf.size();
+                }
+            }
+        }
+    } else {
+        let file = File::open(archive_path).map_err(|e| e.to_string())?;
+        let reader: Box<dyn Read> = if file_name.ends_with(".tar.gz") || file_name.ends_with(".tgz") {
+            Box::new(GzDecoder::new(file))
+        } else if file_name.ends_with(".tar.bz2") || file_name.ends_with(".tbz2") {
+            Box::new(bzip2::read::BzDecoder::new(file))
+        } else {
+            Box::new(file)
+        };
+        let mut archive = tar::Archive::new(reader);
+        if let Ok(entries) = archive.entries() {
+            for entry in entries.flatten() {
+                if entry.header().entry_type().is_dir() {
+                    continue;
+                }
+                if let Ok(p) = entry.path() {
+                    let p_str = p.to_string_lossy();
+                    let name = p_str.trim_matches('/');
+                    if clean_sub.is_empty() || name == clean_sub || name.starts_with(&dir_prefix) {
+                        total += entry.header().size().unwrap_or(0);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(total)
+}

@@ -913,6 +913,140 @@ pub fn create_ftp_directory(site: &SiteConfig, remote_path: &str) -> Result<(), 
     Ok(())
 }
 
+pub fn calculate_sftp_item_size(site: &SiteConfig, remote_path: &str) -> Result<u64, String> {
+    let sess = create_ssh_session(site)?;
+    let sftp = sess.sftp().map_err(|e| e.to_string())?;
+    fn walk_sftp(sftp: &ssh2::Sftp, path: &Path, depth: usize) -> u64 {
+        if depth > 8 {
+            return 0;
+        }
+        if let Ok(stat) = sftp.lstat(path) {
+            if stat.file_type().is_symlink() {
+                return stat.size.unwrap_or(0);
+            }
+            if !stat.is_dir() {
+                return stat.size.unwrap_or(0);
+            }
+        }
+        let mut sum = 0u64;
+        if let Ok(entries) = sftp.readdir(path) {
+            for (child_path, stat) in entries {
+                let fname = child_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if fname == "." || fname == ".." || fname.is_empty() {
+                    continue;
+                }
+                if stat.file_type().is_symlink() {
+                    sum += stat.size.unwrap_or(0);
+                } else if stat.is_dir() {
+                    sum += walk_sftp(sftp, &child_path, depth + 1);
+                } else {
+                    sum += stat.size.unwrap_or(0);
+                }
+            }
+        }
+        sum
+    }
+    Ok(walk_sftp(&sftp, Path::new(remote_path), 0))
+}
+
+pub fn calculate_ftp_item_size(site: &SiteConfig, remote_path: &str) -> Result<u64, String> {
+    let mut ftp = create_ftp_session(site)?;
+
+    fn walk_ftp(ftp: &mut NativeTlsFtpStream, dir_path: &str, depth: usize) -> u64 {
+        if depth > 5 {
+            return 0;
+        }
+        if ftp
+            .cwd(dir_path)
+            .or_else(|_| ftp.cwd(dir_path.trim_start_matches('/')))
+            .is_err()
+        {
+            return ftp.size(dir_path).unwrap_or(0) as u64;
+        }
+
+        let mut total = 0u64;
+        let mut subdirs = Vec::new();
+
+        if let Ok(mlsd_lines) = ftp.mlsd(None) {
+            for raw in mlsd_lines {
+                let line = raw.trim_end_matches(&['\r', '\n'][..]);
+                if let Ok(f) = ListParser::parse_mlsd(line) {
+                    let name = f.name().to_string();
+                    if name == "." || name == ".." || name.is_empty() {
+                        continue;
+                    }
+                    if f.is_directory() {
+                        let sub = if dir_path == "/" {
+                            format!("/{}", name)
+                        } else {
+                            format!("{}/{}", dir_path.trim_end_matches('/'), name)
+                        };
+                        subdirs.push(sub);
+                    } else if !f.is_symlink() {
+                        total += f.size() as u64;
+                    }
+                } else if let Some(sep_idx) = line.find("; ") {
+                    let facts = &line[..sep_idx].to_lowercase();
+                    let name = &line[sep_idx + 2..];
+                    if name == "." || name == ".." || name.is_empty() || facts.contains("type=cdir") || facts.contains("type=pdir") {
+                        continue;
+                    }
+                    if facts.contains("type=dir") {
+                        let sub = if dir_path == "/" {
+                            format!("/{}", name)
+                        } else {
+                            format!("{}/{}", dir_path.trim_end_matches('/'), name)
+                        };
+                        subdirs.push(sub);
+                    } else if !facts.contains("slink") {
+                        let sz = line[..sep_idx]
+                            .split(';')
+                            .find_map(|kv| {
+                                let (k, v) = kv.split_once('=')?;
+                                if k.eq_ignore_ascii_case("size") {
+                                    v.parse::<u64>().ok()
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(0);
+                        total += sz;
+                    }
+                }
+            }
+        } else if let Ok(list_lines) = ftp.list(None) {
+            for raw in list_lines {
+                let line = raw.trim();
+                if let Ok(f) = suppaftp::list::File::try_from(line) {
+                    let name = f.name().to_string();
+                    if name == "." || name == ".." || name.is_empty() {
+                        continue;
+                    }
+                    if f.is_directory() {
+                        let sub = if dir_path == "/" {
+                            format!("/{}", name)
+                        } else {
+                            format!("{}/{}", dir_path.trim_end_matches('/'), name)
+                        };
+                        subdirs.push(sub);
+                    } else if !f.is_symlink() {
+                        total += f.size() as u64;
+                    }
+                }
+            }
+        }
+
+        for sub in subdirs {
+            total += walk_ftp(ftp, &sub, depth + 1);
+        }
+        total
+    }
+
+    let size = walk_ftp(&mut ftp, remote_path, 0);
+    let _ = ftp.quit();
+    Ok(size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

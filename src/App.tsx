@@ -1,6 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from './api';
 import { DirectoryListing, FileEntry, VolumeInfo } from './types';
+import {
+  ThemeColors,
+  applyThemeToDocument,
+  loadSavedTheme,
+  saveThemeToStorage,
+} from './theme';
 import { HeaderBar } from './components/HeaderBar';
 import { FilePanel } from './components/FilePanel';
 import { FunctionBar } from './components/FunctionBar';
@@ -14,11 +20,51 @@ import { MkDirModal } from './components/modals/MkDirModal';
 import { DeleteModal } from './components/modals/DeleteModal';
 import { SiteManagerModal } from './components/modals/SiteManagerModal';
 import { ArchiveModal } from './components/modals/ArchiveModal';
+import { ThemeModal } from './components/modals/ThemeModal';
+
+interface PendingFocus {
+  targetPath?: string;
+  targetName?: string;
+  resetToTop?: boolean;
+}
+
+function getExitedChildInfo(fromPath: string): { targetPath: string; targetName: string } {
+  if (fromPath.startsWith('archive://')) {
+    const withoutScheme = fromPath.slice('archive://'.length);
+    const [archFile, sub = ''] = withoutScheme.split('#');
+    const cleanSub = sub.replace(/^\/+|\/+$/g, '');
+    if (!cleanSub) {
+      // Exiting root of archive back to parent folder on disk -> focus the archive file!
+      const cleanArch = archFile.replace(/\/+$/, '');
+      return {
+        targetPath: cleanArch,
+        targetName: cleanArch.split('/').pop() || '',
+      };
+    }
+    // Moving up one folder inside virtual archive
+    const subParts = cleanSub.split('/');
+    return {
+      targetPath: `archive://${archFile}#${cleanSub}`,
+      targetName: subParts[subParts.length - 1] || '',
+    };
+  }
+
+  const trimmed = fromPath.replace(/\/+$/, '');
+  const name = trimmed.split('/').pop() || '';
+  return {
+    targetPath: trimmed,
+    targetName: name,
+  };
+}
 
 export const App: React.FC = () => {
   const [activePane, setActivePane] = useState<'left' | 'right'>('left');
   const [volumes, setVolumes] = useState<VolumeInfo[]>([]);
   const [homeDir, setHomeDir] = useState<string>('');
+
+  // Theme State
+  const [themeColors, setThemeColors] = useState<ThemeColors>(() => loadSavedTheme());
+  const [themeOpen, setThemeOpen] = useState(false);
 
   // Left Panel State
   const [leftPath, setLeftPath] = useState<string>('');
@@ -33,6 +79,16 @@ export const App: React.FC = () => {
   const [rightIndex, setRightIndex] = useState<number>(0);
   const [rightSelected, setRightSelected] = useState<Set<string>>(new Set());
   const [rightShowHidden, setRightShowHidden] = useState<boolean>(false);
+
+  // Calculated directory/item sizes (triggered by Spacebar / Selection)
+  const [calculatedSizes, setCalculatedSizes] = useState<Record<string, number>>({});
+  const [calculatingPaths, setCalculatingPaths] = useState<Set<string>>(new Set());
+
+  // Pending cursor target when navigating up/down directories
+  const pendingFocusRef = useRef<{ left: PendingFocus | null; right: PendingFocus | null }>({
+    left: null,
+    right: null,
+  });
 
   // Modals
   const [helpOpen, setHelpOpen] = useState(false);
@@ -86,6 +142,11 @@ export const App: React.FC = () => {
     message: '',
   });
 
+  // Apply persisted theme CSS variables immediately
+  useEffect(() => {
+    applyThemeToDocument(themeColors);
+  }, [themeColors]);
+
   // Initial load
   useEffect(() => {
     const init = async () => {
@@ -104,15 +165,62 @@ export const App: React.FC = () => {
     init();
   }, []);
 
+  // Trigger async recursive size calculation on item/directory
+  const triggerSizeCalculation = useCallback((entry: FileEntry) => {
+    if (entry.name === '..') return;
+    if (!entry.is_dir) {
+      setCalculatedSizes((prev) => ({ ...prev, [entry.path]: entry.size }));
+      return;
+    }
+
+    setCalculatingPaths((prev) => {
+      const next = new Set(prev);
+      next.add(entry.path);
+      return next;
+    });
+
+    api
+      .calculateItemSize(entry.path)
+      .then((bytes) => {
+        setCalculatedSizes((prev) => ({ ...prev, [entry.path]: bytes }));
+      })
+      .catch((err) => {
+        console.warn('Size calculation error:', err);
+      })
+      .finally(() => {
+        setCalculatingPaths((prev) => {
+          const next = new Set(prev);
+          next.delete(entry.path);
+          return next;
+        });
+      });
+  }, []);
+
   // Refresh left panel
   const refreshLeft = useCallback(async (path?: string) => {
     const targetPath = path || leftPath;
     if (!targetPath) return;
     try {
       const listing = await api.listDirectory(targetPath, leftShowHidden);
+      const pending = pendingFocusRef.current.left;
+      pendingFocusRef.current.left = null;
+
       setLeftListing(listing);
-      setLeftIndex((prev) => Math.min(prev, Math.max(0, listing.entries.length - 1)));
+
+      if (pending?.targetPath || pending?.targetName) {
+        const matchIdx = listing.entries.findIndex(
+          (e) =>
+            (pending.targetPath && e.path === pending.targetPath) ||
+            (pending.targetName && e.name === pending.targetName)
+        );
+        setLeftIndex(matchIdx >= 0 ? matchIdx : 0);
+      } else if (pending?.resetToTop) {
+        setLeftIndex(0);
+      } else {
+        setLeftIndex((prev) => Math.min(prev, Math.max(0, listing.entries.length - 1)));
+      }
     } catch (err: any) {
+      pendingFocusRef.current.left = null;
       console.error('Failed to list left directory:', err);
       const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
       setErrorAlert({
@@ -136,9 +244,25 @@ export const App: React.FC = () => {
     if (!targetPath) return;
     try {
       const listing = await api.listDirectory(targetPath, rightShowHidden);
+      const pending = pendingFocusRef.current.right;
+      pendingFocusRef.current.right = null;
+
       setRightListing(listing);
-      setRightIndex((prev) => Math.min(prev, Math.max(0, listing.entries.length - 1)));
+
+      if (pending?.targetPath || pending?.targetName) {
+        const matchIdx = listing.entries.findIndex(
+          (e) =>
+            (pending.targetPath && e.path === pending.targetPath) ||
+            (pending.targetName && e.name === pending.targetName)
+        );
+        setRightIndex(matchIdx >= 0 ? matchIdx : 0);
+      } else if (pending?.resetToTop) {
+        setRightIndex(0);
+      } else {
+        setRightIndex((prev) => Math.min(prev, Math.max(0, listing.entries.length - 1)));
+      }
     } catch (err: any) {
+      pendingFocusRef.current.right = null;
       console.error('Failed to list right directory:', err);
       const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err);
       setErrorAlert({
@@ -170,68 +294,75 @@ export const App: React.FC = () => {
   const currentItem = activeListing?.entries[activeIndex];
   const oppositePath = activePane === 'left' ? rightPath : leftPath;
 
-  // Toggle mark on item
-  const handleToggleMark = (path: string) => {
+  // Toggle mark on item + calculate item/directory size when selected
+  const handleToggleMark = (entry: FileEntry, advanceCursor = true) => {
+    if (entry.name === '..') return;
     const isLeft = activePane === 'left';
     const currentSet = isLeft ? new Set(leftSelected) : new Set(rightSelected);
 
-    if (currentSet.has(path)) {
-      currentSet.delete(path);
+    const isAdding = !currentSet.has(entry.path);
+    if (isAdding) {
+      currentSet.add(entry.path);
+      triggerSizeCalculation(entry);
     } else {
-      currentSet.add(path);
+      currentSet.delete(entry.path);
     }
 
     if (isLeft) {
       setLeftSelected(currentSet);
-      if (leftListing && leftIndex < leftListing.entries.length - 1) {
+      if (advanceCursor && leftListing && leftIndex < leftListing.entries.length - 1) {
         setLeftIndex(leftIndex + 1);
       }
     } else {
       setRightSelected(currentSet);
-      if (rightListing && rightIndex < rightListing.entries.length - 1) {
+      if (advanceCursor && rightListing && rightIndex < rightListing.entries.length - 1) {
         setRightIndex(rightIndex + 1);
       }
     }
   };
 
-  // Navigate on Enter
+  // Navigate to an arbitrary path on a pane (e.g. from Menu, Volume selector, SiteManager)
+  const navigatePaneTo = (pane: 'left' | 'right', destinationPath: string, focus?: PendingFocus) => {
+    pendingFocusRef.current[pane] = focus || { resetToTop: true };
+    if (pane === 'left') {
+      setLeftSelected(new Set());
+      if (leftPath === destinationPath) {
+        refreshLeft(destinationPath);
+      } else {
+        setLeftPath(destinationPath);
+      }
+    } else {
+      setRightSelected(new Set());
+      if (rightPath === destinationPath) {
+        refreshRight(destinationPath);
+      } else {
+        setRightPath(destinationPath);
+      }
+    }
+  };
+
+  // Navigate on Enter / Double-Click / Backspace
   const handleEnter = async (entry: FileEntry) => {
     if (entry.name === '..') {
-      // Go up
-      const current = activePane === 'left' ? leftPath : rightPath;
-      if (current.startsWith('archive://')) {
-        // Handled inside entry.path
-        if (activePane === 'left') setLeftPath(entry.path);
-        else setRightPath(entry.path);
-      } else {
-        const parent = entry.path;
-        if (activePane === 'left') setLeftPath(parent);
-        else setRightPath(parent);
-      }
+      // Going UP one directory level -> focus the directory (or archive) we just exited!
+      const effectiveCurrent =
+        (activePane === 'left' ? leftListing?.path || leftPath : rightListing?.path || rightPath) || '';
+      const exited = getExitedChildInfo(effectiveCurrent);
+      navigatePaneTo(activePane, entry.path, {
+        targetPath: exited.targetPath,
+        targetName: exited.targetName,
+      });
       return;
     }
 
     if (entry.is_dir) {
-      if (activePane === 'left') {
-        setLeftPath(entry.path);
-        setLeftIndex(0);
-      } else {
-        setRightPath(entry.path);
-        setRightIndex(0);
-      }
+      navigatePaneTo(activePane, entry.path, { resetToTop: true });
       return;
     }
 
     if (entry.is_archive) {
-      // Enter archive as virtual directory
       const archiveUrl = `archive://${entry.path}#`;
-      if (activePane === 'left') {
-        setLeftPath(archiveUrl);
-        setLeftIndex(0);
-      } else {
-        setRightPath(archiveUrl);
-        setRightIndex(0);
-      }
+      navigatePaneTo(activePane, archiveUrl, { resetToTop: true });
       return;
     }
 
@@ -370,9 +501,9 @@ export const App: React.FC = () => {
   // Selection actions
   const handleSelectAll = () => {
     if (!activeListing) return;
-    const all = new Set(
-      activeListing.entries.filter((e) => e.name !== '..').map((e) => e.path)
-    );
+    const validEntries = activeListing.entries.filter((e) => e.name !== '..');
+    const all = new Set(validEntries.map((e) => e.path));
+    validEntries.forEach((e) => triggerSizeCalculation(e));
     if (activePane === 'left') setLeftSelected(all);
     else setRightSelected(all);
   };
@@ -384,6 +515,7 @@ export const App: React.FC = () => {
     for (const e of activeListing.entries) {
       if (e.name !== '..' && !current.has(e.path)) {
         inverted.add(e.path);
+        triggerSizeCalculation(e);
       }
     }
     if (activePane === 'left') setLeftSelected(inverted);
@@ -403,10 +535,22 @@ export const App: React.FC = () => {
 
   // Master Global Keyboard Listener
   useEffect(() => {
+    const anyModalOpen =
+      helpOpen ||
+      menuOpen ||
+      siteManagerOpen ||
+      themeOpen ||
+      viewState.open ||
+      editState.open ||
+      mkdirOpen ||
+      deleteState.open ||
+      copyMoveState.open ||
+      archiveState.open ||
+      errorAlert.open;
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't capture shortcuts when typing in an input/textarea inside a modal or shell
       const target = e.target as HTMLElement;
-      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
 
       // Allow ESC or Enter to close error dialog
       if (errorAlert.open && (e.key === 'Escape' || e.key === 'Enter')) {
@@ -415,8 +559,20 @@ export const App: React.FC = () => {
         return;
       }
 
+      // Cmd + , to open Theme / Color Editor
+      if (e.metaKey && e.key === ',') {
+        e.preventDefault();
+        setThemeOpen(true);
+        return;
+      }
+
       // Allow ESC to close modals even in inputs
       if (e.key === 'Escape') {
+        if (themeOpen) {
+          applyThemeToDocument(themeColors);
+          setThemeOpen(false);
+          return;
+        }
         if (helpOpen) setHelpOpen(false);
         if (menuOpen) setMenuOpen(false);
         if (siteManagerOpen) setSiteManagerOpen(false);
@@ -428,15 +584,15 @@ export const App: React.FC = () => {
         return;
       }
 
-      // Cmd + . (or Cmd + Shift + . or Ctrl + H) to toggle hidden files
+      // Cmd + . (or Ctrl + H) to toggle hidden files
       if ((e.metaKey && e.key === '.') || (e.ctrlKey && (e.key === 'h' || e.key === 'H'))) {
         e.preventDefault();
         handleToggleHidden();
         return;
       }
 
-      // If user is focused on an input/textarea (like ShellPrompt or EditModal), don't hijack keys
-      if (isInput) return;
+      // Don't hijack panel navigation keys when a modal is open or an input is focused
+      if (isInput || anyModalOpen) return;
 
       // Tab switches active panel
       if (e.key === 'Tab') {
@@ -503,11 +659,18 @@ export const App: React.FC = () => {
         return;
       }
 
-      // Mark file with Space or Insert
+      // Mark file/dir with Space or Insert -> also calculates directory/item size!
       if (e.key === ' ' || e.key === 'Insert') {
         e.preventDefault();
-        if (currentItem && currentItem.name !== '..') {
-          handleToggleMark(currentItem.path);
+        if (currentItem) {
+          if (currentItem.name !== '..') {
+            handleToggleMark(currentItem, true);
+          } else {
+            // Even on '..', advance cursor like classic NC
+            const maxIdx = (activeListing?.entries.length || 1) - 1;
+            if (activePane === 'left') setLeftIndex((prev) => Math.min(maxIdx, prev + 1));
+            else setRightIndex((prev) => Math.min(maxIdx, prev + 1));
+          }
         }
         return;
       }
@@ -521,10 +684,10 @@ export const App: React.FC = () => {
         return;
       }
 
-      // Backspace: go up to parent
+      // Backspace: go up to parent and position cursor on the directory we exited from!
       if (e.key === 'Backspace') {
         e.preventDefault();
-        const parentEntry = activeListing?.entries.find((e) => e.name === '..');
+        const parentEntry = activeListing?.entries.find((en) => en.name === '..');
         if (parentEntry) {
           handleEnter(parentEntry);
         }
@@ -554,7 +717,10 @@ export const App: React.FC = () => {
     helpOpen,
     menuOpen,
     siteManagerOpen,
+    themeOpen,
+    themeColors,
     viewState.open,
+    editState.open,
     mkdirOpen,
     deleteState.open,
     copyMoveState.open,
@@ -562,6 +728,8 @@ export const App: React.FC = () => {
     errorAlert.open,
     leftShowHidden,
     rightShowHidden,
+    leftSelected,
+    rightSelected,
   ]);
 
   const activePath = activePane === 'left' ? leftPath : rightPath;
@@ -575,9 +743,9 @@ export const App: React.FC = () => {
         showHidden={activePane === 'left' ? leftShowHidden : rightShowHidden}
         onToggleHidden={handleToggleHidden}
         onOpenMenu={handleF2Menu}
+        onOpenTheme={() => setThemeOpen(true)}
         onSelectVolume={(mount) => {
-          if (activePane === 'left') setLeftPath(mount);
-          else setRightPath(mount);
+          navigatePaneTo(activePane, mount, { resetToTop: true });
         }}
       />
 
@@ -589,11 +757,13 @@ export const App: React.FC = () => {
           listing={leftListing}
           selectedIndex={leftIndex}
           selectedPaths={leftSelected}
+          calculatedSizes={calculatedSizes}
+          calculatingPaths={calculatingPaths}
           onSelectIndex={setLeftIndex}
           onToggleMark={handleToggleMark}
           onEnter={handleEnter}
           onActivate={() => setActivePane('left')}
-          onNavigateTo={setLeftPath}
+          onNavigateTo={(p) => navigatePaneTo('left', p, { resetToTop: true })}
         />
 
         <FilePanel
@@ -602,11 +772,13 @@ export const App: React.FC = () => {
           listing={rightListing}
           selectedIndex={rightIndex}
           selectedPaths={rightSelected}
+          calculatedSizes={calculatedSizes}
+          calculatingPaths={calculatingPaths}
           onSelectIndex={setRightIndex}
           onToggleMark={handleToggleMark}
           onEnter={handleEnter}
           onActivate={() => setActivePane('right')}
-          onNavigateTo={setRightPath}
+          onNavigateTo={(p) => navigatePaneTo('right', p, { resetToTop: true })}
         />
       </div>
 
@@ -615,7 +787,6 @@ export const App: React.FC = () => {
         currentPath={activePath}
         onExecute={async (cmd) => {
           const res = await api.executeShellCommand(activePath, cmd);
-          // Refresh both panels after shell command
           refreshLeft();
           refreshRight();
           return res;
@@ -644,15 +815,26 @@ export const App: React.FC = () => {
           volumes={volumes}
           homeDir={homeDir}
           onNavigate={(p) => {
-            if (activePane === 'left') setLeftPath(p);
-            else setRightPath(p);
+            navigatePaneTo(activePane, p, { resetToTop: true });
           }}
           onPackArchive={handleOpenPackArchive}
           onSelectAll={handleSelectAll}
           onInvertSelect={handleInvertSelect}
           onClearSelect={handleClearSelect}
           onOpenSiteManager={handleF9Connect}
+          onOpenTheme={() => setThemeOpen(true)}
           onClose={() => setMenuOpen(false)}
+        />
+      )}
+
+      {themeOpen && (
+        <ThemeModal
+          initialTheme={themeColors}
+          onSave={(newTheme) => {
+            setThemeColors(newTheme);
+            saveThemeToStorage(newTheme);
+          }}
+          onClose={() => setThemeOpen(false)}
         />
       )}
 
@@ -723,8 +905,7 @@ export const App: React.FC = () => {
       {siteManagerOpen && (
         <SiteManagerModal
           onConnect={(mountUrl) => {
-            if (activePane === 'left') setLeftPath(mountUrl);
-            else setRightPath(mountUrl);
+            navigatePaneTo(activePane, mountUrl, { resetToTop: true });
           }}
           onClose={() => setSiteManagerOpen(false)}
         />

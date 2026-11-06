@@ -81,4 +81,8 @@ export const api = {
   exportSitesToJson: async (): Promise<string> => {
     return await invoke('export_sites_to_json');
   },
+
+  calculateItemSize: async (path: string): Promise<number> => {
+    return await invoke('calculate_item_size', { path });
+  },
 };
